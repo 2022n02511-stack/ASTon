@@ -1,0 +1,14 @@
+[
+  {
+    "package": "openai",
+    "old_api": "openai.ChatCompletion.create",
+    "new_api": "client.chat.completions.create",
+    "requires_instantiation": "OpenAI"
+  },
+  {
+    "package": "openai",
+    "old_api": "openai.Embedding.create",
+    "new_api": "client.embeddings.create",
+    "requires_instantiation": "OpenAI"
+  }
+]
