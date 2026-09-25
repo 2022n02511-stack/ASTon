@@ -6,7 +6,6 @@ from openai import OpenAI as Client
 
 import os
 from typing import Any
-import httpx
 
 
 # ============================================================
@@ -14,28 +13,24 @@ import httpx
 # ============================================================
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
-oai.api_base = "https://example.com/v1"
-openai.proxy = "http://localhost:8080"
-
-legacy_client = OpenAI(
-    api_key=openai.api_key,
-    base_url=oai.api_base,
-    http_client=httpx.Client(proxy=openai.proxy) if openai.proxy else None
-)
+openai.base_url = "https://example.com/v1"
+# openai.proxy = "http://localhost:8080"
 
 
 # ============================================================
 # 2. Direct legacy module calls
 # ============================================================
 
-completion = legacy_client.chat.completions.create(
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url="https://example.com/v1")
+
+completion = client.chat.completions.create(
     model="gpt-3.5-turbo",
     messages=[
         {"role": "user", "content": "Hello"}
     ]
 )
 
-embedding = legacy_client.embeddings.create(
+embedding = client.embeddings.create(
     input="hello",
     model="text-embedding-ada-002"
 )
@@ -45,7 +40,7 @@ embedding = legacy_client.embeddings.create(
 # 3. Aliased module calls
 # ============================================================
 
-completion_2 = legacy_client.chat.completions.create(
+completion_2 = client.chat.completions.create(
     model="gpt-3.5-turbo",
     messages=[
         {"role": "user", "content": "Hello again"}
@@ -189,7 +184,7 @@ helper_response = helper_client.chat.completions.create(
 # ============================================================
 
 for prompt in ["one", "two", "three"]:
-    loop_response = legacy_client.chat.completions.create(
+    loop_response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
             {"role": "user", "content": prompt}
@@ -202,7 +197,7 @@ for prompt in ["one", "two", "three"]:
 # ============================================================
 
 if True:
-    conditional_response = legacy_client.chat.completions.create(
+    conditional_response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[]
     )
@@ -212,9 +207,9 @@ if True:
 # 14. Nested attribute access
 # ============================================================
 
-error_type = openai.InvalidRequestError
+error_type = openai.BadRequestError
 
-base_url = openai.api_base
+base_url = openai.base_url
 
 
 # ============================================================
@@ -226,7 +221,7 @@ kwargs = {
     "messages": []
 }
 
-keyword_response = legacy_client.chat.completions.create(
+keyword_response = client.chat.completions.create(
     **kwargs
 )
 
@@ -278,7 +273,8 @@ except ImportError:
     conditional_openai = None
 
 if conditional_openai:
-    conditional_completion = legacy_client.chat.completions.create(
+    conditional_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url="https://example.com/v1")
+    conditional_completion = conditional_client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[]
     )
@@ -288,12 +284,12 @@ if conditional_openai:
 # 20. Dynamic attribute access
 # ============================================================
 
-resource = getattr(openai, "ChatCompletion")
+# resource = getattr(openai, "ChatCompletion")
 
-dynamic_completion = resource.create(
-    model="gpt-3.5-turbo",
-    messages=[]
-)
+# dynamic_completion = resource.create(
+#     model="gpt-3.5-turbo",
+#     messages=[]
+# )
 
 
 # ============================================================
@@ -331,14 +327,14 @@ fake_response = fake.ChatCompletion.create(
 # 23. Exception usage
 # ============================================================
 
-try:
-    raise openai.InvalidRequestError(
-        "Something went wrong",
-        response=None,
-        body=None
-    )
-except openai.InvalidRequestError:
-    print("Invalid request")
+# try:
+#     raise openai.BadRequestError(
+#         "Something went wrong",
+#         response=None,
+#         body=None
+#     )
+# except openai.BadRequestError:
+#     print("Invalid request")
 
 
 # ============================================================

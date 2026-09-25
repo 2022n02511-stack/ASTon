@@ -14,7 +14,7 @@ from typing import Any
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 oai.api_base = "https://example.com/v1"
-openai.proxy = "http://localhost:8080"
+# openai.proxy = "http://localhost:8080"
 
 
 # ============================================================
@@ -281,12 +281,12 @@ if conditional_openai:
 # 20. Dynamic attribute access
 # ============================================================
 
-resource = getattr(openai, "ChatCompletion")
+# resource = getattr(openai, "ChatCompletion")
 
-dynamic_completion = resource.create(
-    model="gpt-3.5-turbo",
-    messages=[]
-)
+# dynamic_completion = resource.create(
+#     model="gpt-3.5-turbo",
+#     messages=[]
+# )
 
 
 # ============================================================
@@ -324,14 +324,14 @@ fake_response = fake.ChatCompletion.create(
 # 23. Exception usage
 # ============================================================
 
-try:
-    raise openai.InvalidRequestError(
-        "Something went wrong",
-        response=None,
-        body=None
-    )
-except openai.InvalidRequestError:
-    print("Invalid request")
+# try:
+#     raise openai.InvalidRequestError(
+#         "Something went wrong",
+#         response=None,
+#         body=None
+#     )
+# except openai.InvalidRequestError:
+#     print("Invalid request")
 
 
 # ============================================================

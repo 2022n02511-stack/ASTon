@@ -812,6 +812,89 @@ OUTPUT REQUIREMENT
 
 Return ONLY the complete migrated source code.
 
+MOST IMPORTANT:
+
+You can't add module names yourself and change that to something else, if module was imported as aliased or whatever and it was used in calling api, you cant' change it, only odofy according to new rules with existing module names.
+
+IMPORTANT PATCHING RULES:
+
+1. Preserve existing import aliases and variable names whenever possible.
+2. Do not invent arbitrary client variable names such as `legacy_client`,
+   `migration_client`, or `new_client`.
+3. If the codebase already contains an appropriate OpenAI client instance,
+   reuse it.
+4. If a new client instance is genuinely required, choose its name based
+   on the existing codebase conventions and explain/use that consistently.
+5. Never modify usages that are already compatible with the target API.
+6. Preserve unrelated code.
+
+IMPORTANT: CLIENT INSTANTIATION AND ALIAS MIGRATION
+
+Some migration rules contain:
+requires_instantiation: "OpenAI"
+
+This means the old API cannot simply be replaced with the new API.
+A valid OpenAI client instance MUST exist before the migrated call executes.
+
+Example:
+
+OLD:
+openai.ChatCompletion.create(...)
+
+RULE:
+openai.ChatCompletion.create
+→ client.chat.completions.create
+requires_instantiation: OpenAI
+
+The result MUST NOT contain:
+
+client.chat.completions.create(...)
+
+unless `client` is already defined and initialized before this usage.
+
+Before replacing a legacy call:
+
+1. Look through the existing source code for an already-created compatible
+   OpenAI client that is in scope at the usage location.
+
+2. Reuse that existing client whenever possible.
+
+3. If no suitable client exists, create an OpenAI client before the migrated
+   usage.
+
+4. Do not create an arbitrary undefined variable such as `client`,
+   `legacy_client`, or `migration_client` and assume it exists.
+
+5. The client must be defined BEFORE the first migrated usage that references it.
+
+6. If multiple legacy usages are in the same scope, prefer ONE appropriate
+   client instance rather than creating a new client for every call.
+
+7. Preserve existing imports and aliases whenever possible.
+
+8. The alias used by the old API does NOT determine the new client variable.
+
+For example:
+
+import openai as oai
+
+oai.ChatCompletion.create(...)
+
+may become:
+
+client = OpenAI()
+client.chat.completions.create(...)
+
+provided `client` is actually initialized before the call.
+
+IMPORTANT:
+The `detected_usage` field identifies the exact source expression being
+migrated.
+
+The `canonical_usage` field identifies which migration rule applies.
+
+Do not confuse the two.
+
 Do NOT return:
 
 - explanations

@@ -13,6 +13,16 @@ def normalize_api_symbol(symbol: str) -> str:
 
     return symbol
 
+def canonicalize_usage(record):
+    package = record.get("package")
+    alias = record.get("local_alias")
+    usage = record["api_usage"]
+
+    if alias and usage.startswith(alias + "."):
+        return package + usage[len(alias):]
+
+    return usage
+
 
 def determine_expected_affected_symbols(
     stage0_symbols: set[str],

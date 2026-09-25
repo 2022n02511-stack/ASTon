@@ -77,7 +77,7 @@ WORKDIR /app
 
 ENV OPENAI_API_KEY=sk-test-dummy-key-for-verification-only
 
-RUN pip install --no-cache-dir "{package_req}" httpx
+RUN pip install --no-cache-dir "openai>=1.0.0" httpx requests
 
 COPY {target_file} /app/{target_file}
 COPY run_mocked_test.py /app/run_mocked_test.py
