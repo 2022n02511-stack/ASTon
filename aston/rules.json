@@ -1,0 +1,266 @@
+[
+   {
+      "package": "openai",
+      "old_api": "openai.api_base",
+      "new_api": "openai.base_url",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": null
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.proxy",
+      "new_api": "openai.proxies",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": null
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.InvalidRequestError",
+      "new_api": "openai.BadRequestError",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": null
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.Audio.transcribe",
+      "new_api": "client.audio.transcriptions.create",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.Audio.translate",
+      "new_api": "client.audio.translations.create",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.ChatCompletion.create",
+      "new_api": "client.chat.completions.create",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.Completion.create",
+      "new_api": "client.completions.create",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.Edit.create",
+      "new_api": "client.edits.create",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.Embedding.create",
+      "new_api": "client.embeddings.create",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.File.create",
+      "new_api": "client.files.create",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.File.list",
+      "new_api": "client.files.list",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.File.retrieve",
+      "new_api": "client.files.retrieve",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.File.download",
+      "new_api": "client.files.retrieve_content",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.FineTune.cancel",
+      "new_api": "client.fine_tunes.cancel",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.FineTune.list",
+      "new_api": "client.fine_tunes.list",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.FineTune.list_events",
+      "new_api": "client.fine_tunes.list_events",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.FineTune.retrieve",
+      "new_api": "client.fine_tunes.retrieve",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.FineTune.delete",
+      "new_api": "client.fine_tunes.delete",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.FineTune.create",
+      "new_api": "client.fine_tunes.create",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.create",
+      "new_api": "client.fine_tuning.jobs.create",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.cancel",
+      "new_api": "client.fine_tuning.jobs.cancel",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.delete",
+      "new_api": "client.fine_tuning.jobs.create",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.retrieve",
+      "new_api": "client.fine_tuning.jobs.retrieve",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.list",
+      "new_api": "client.fine_tuning.jobs.list",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.list_events",
+      "new_api": "client.fine_tuning.jobs.list_events",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.Image.create",
+      "new_api": "client.images.generate",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.Image.create_variation",
+      "new_api": "client.images.create_variation",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.Image.create_edit",
+      "new_api": "client.images.edit",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.Model.list",
+      "new_api": "client.models.list",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.Model.delete",
+      "new_api": "client.models.delete",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.Model.retrieve",
+      "new_api": "client.models.retrieve",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.Moderation.create",
+      "new_api": "client.moderations.create",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": "client = OpenAI()"
+   },
+   {
+      "package": "openai",
+      "old_api": "openai.api_resources",
+      "new_api": "openai.resources",
+      "change_type": "breaking",
+      "breaking_version": "1.0.0",
+      "requires_instantiation": null
+   }
+]

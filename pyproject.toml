@@ -1,0 +1,8 @@
+[project]
+name = "aston"
+version = "0.1.0"
+description = "Self-maintaining API migration tool"
+requires-python = ">=3.11"
+
+[project.scripts]
+aston = "aston.cli.main:main"

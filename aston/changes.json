@@ -1,0 +1,26 @@
+[
+  {
+    "package": "openai",
+    "old_api": "openai.api_base",
+    "new_api": "openai.base_url",
+    "requires_instantiation": null
+  },
+  {
+    "package": "openai",
+    "old_api": "openai.InvalidRequestError",
+    "new_api": "openai.BadRequestError",
+    "requires_instantiation": null
+  },
+  {
+    "package": "openai",
+    "old_api": "openai.ChatCompletion.create",
+    "new_api": "client.chat.completions.create",
+    "requires_instantiation": "OpenAI"
+  },
+  {
+    "package": "openai",
+    "old_api": "openai.Embedding.create",
+    "new_api": "client.embeddings.create",
+    "requires_instantiation": "OpenAI"
+  }
+]
