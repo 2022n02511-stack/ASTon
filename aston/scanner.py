@@ -188,7 +188,7 @@ class Tracker(VisitorMetadataProvider):
 
 
 def parser():
-    path = Path("sample.py")
+    path = Path("/demo/sample.py")
     if not path.exists():
         path = Path("before.py")
 

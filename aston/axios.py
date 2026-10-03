@@ -18,6 +18,30 @@ API_KEY = os.environ.get("MISTRAL_API_KEY")
 client = Mistral(api_key=API_KEY)
 # client = genai.Client(api_key=API_KEY)
 
+def stage0(package_name: str, parse):
+    """
+    Executes Stages 0–3 utilizing multi-boundary version discovery and rule composition.
+    """
+    # print(f"\n==================================================")
+    # print(f"--- [Stage 0] Fetching Dynamic AST Scanned Usages ---")
+    # print(f"==================================================")
+    parses = parse
+
+    stage0_records = [
+    parse
+    for parse in parses
+    if parse["package"] == package_name
+    ]
+
+    dynamic_stage0_symbols =  { canonicalize_usage(record) 
+                               for record in stage0_records }
+
+    # dynamic_stage0_symbols = {parse['api_usage'] for parse in parses if parse['package'] == package_name}
+    print(f" Dynamic AST Scanned Usages: {dynamic_stage0_symbols}")
+
+    return dynamic_stage0_symbols
+
+
 def clean_mistral_code(raw_response: str) -> str:
     """Removes markdown code fences from the LLM string response."""
     lines = raw_response.strip().splitlines()
@@ -35,7 +59,7 @@ def clean_mistral_code(raw_response: str) -> str:
     return "\n".join(lines).strip()
 
 # Load Stage 3 system prompt
-with open('aston/patcher_prompt.txt', 'r') as f:
+with open('patcher_prompt.txt', 'r') as f:
     prompt = f.read()
 
 def man_extract(rules: list):
@@ -78,7 +102,7 @@ def man_extract(rules: list):
 
     return report      
 
-def code_patcher(source_code: str, matches: list, rules: list, target_version: str, repair_context: dict | None = None):
+def code_patcher(source_code: str, matches: list, rules: list, target_version: list, current_version : list, repair_context: dict | None = None):
     """
     Stage 3 / Stage 5 AST and LLM Code Patcher.
     ISOLATION GUARANTEE: If rules or matches are empty, strictly return original code!
@@ -96,13 +120,15 @@ def code_patcher(source_code: str, matches: list, rules: list, target_version: s
 
     cont = f"""
 
-    MIGRATION_RULES: 
+    MIGRATION_RULES_FOR_EACH_DEPENDENCY: 
     {json.dumps(rules, indent=2)}
 
-    MATCHES/AFFECTED_USAGES: 
+    MATCHES/AFFECTED_USAGES_FOR_EACH_DEPENDENCY: 
     {json.dumps(matches, indent=2)}
 
-    TARGET_DEPENDENCY_VERSION: 
+    CURRENT_DEPENDENCIES_VERSIONS
+
+    TARGET_DEPENDENCIES_VERSIONS: 
     {target_version}
 
     REPAIR_CONTEXT (Stage 5 Diagnostics if present): 
@@ -149,85 +175,66 @@ def code_patcher(source_code: str, matches: list, rules: list, target_version: s
 
     return clean
 
-def run_chain_migration(package_name: str):
-    """
-    Executes Stages 0–3 utilizing multi-boundary version discovery and rule composition.
-    """
-    print(f"\n==================================================")
-    print(f"--- [Stage 0] Fetching Dynamic AST Scanned Usages ---")
-    print(f"==================================================")
-    parses = parser()
 
-    stage0_records = [
-    parse
-    for parse in parses
-    if parse["package"] == package_name
-    ]
+    # print(f"\n==================================================")
+    # print(f"--- [Stage 1] Multi-Boundary Chain Ingestion ---")
+    # print(f"==================================================")
 
-    dynamic_stage0_symbols =  { canonicalize_usage(record) 
-                               for record in stage0_records }
-
-    # dynamic_stage0_symbols = {parse['api_usage'] for parse in parses if parse['package'] == package_name}
-    print(f" Dynamic AST Scanned Usages: {dynamic_stage0_symbols}")
-
-    print(f"\n==================================================")
-    print(f"--- [Stage 1] Multi-Boundary Chain Ingestion ---")
-    print(f"==================================================")
-
-    target_version = get_latest_pypi_version(package_name)
+    # target_version = target_version
     
-    # Executes get_migration_chain + merge_rule_chain across all major version jumps
-    composed_rules, doc_text = run_stage1_pipeline(package_name, current_version="0.28.1", target_version=target_version)
+    # # Executes get_migration_chain + merge_rule_chain across all major version jumps
+    # composed_rules, doc_text = run_stage1_pipeline(package_name, current_version=current_version, target_version=target_version)
 
 
 
-    if not composed_rules:
-        print(
-        "⚠️ Warning: No migration rules extracted across the version chain!"
-        )
-        return None, [], [], target_version
+    # if not composed_rules:
+    #     print(
+    #     "⚠️ Warning: No migration rules extracted across the version chain!"
+    #     )
+    #     return None, [], [], target_version
 
-    print("\n==================================================")
-    print("--- [Stage 2] Relevance & Completeness Audit ---")
-    print("==================================================")
-    audit = evaluate_relevance_and_completeness(dynamic_stage0_symbols, composed_rules, doc_text)
+    # print("\n==================================================")
+    # print("--- [Stage 2] Relevance & Completeness Audit ---")
+    # print("==================================================")
+    # audit = evaluate_relevance_and_completeness(dynamic_stage0_symbols, composed_rules, doc_text)
 
-    raw_missing = audit.get('missing_symbols', [])
-    filtered_missing = [
-        sym for sym in raw_missing 
-        if not (sym.endswith(".chat.completions.create") and not sym.startswith("openai."))
-    ]
+    # raw_missing = audit.get('missing_symbols', [])
+    # filtered_missing = [
+    #     sym for sym in raw_missing 
+    #     if not (sym.endswith(".chat.completions.create") and not sym.startswith("openai."))
+    # ]
     
-    print(f" Expected Affected Symbols: {audit['expected_affected_symbols']}")
-    print(f" Missing Symbols: {audit['missing_symbols']}")
+    # print(f" Expected Affected Symbols: {audit['expected_affected_symbols']}")
+    # print(f" Missing Symbols: {audit['missing_symbols']}")
 
-    is_genuinely_complete = len(filtered_missing) == 0
-    if not is_genuinely_complete:
-        print(f"🚨 WARNING: Genuinely missing rule extractions detected: {filtered_missing}")
-    else:
-        print("✅ Extraction Completeness Audit Passed (ignoring already-migrated client calls)!")
+    # is_genuinely_complete = len(filtered_missing) == 0
+    # if not is_genuinely_complete:
+    #     print(f"🚨 WARNING: Genuinely missing rule extractions detected: {filtered_missing}")
+    # else:
+    #     print("✅ Extraction Completeness Audit Passed (ignoring already-migrated client calls)!")
 
-    relevant_rules = audit["relevant_records"]
+    # relevant_rules = audit["relevant_records"]
 
-    with open("changes.json", "w") as f:
-        json.dump(relevant_rules, f, indent=2)
-    print("📁 Canonical contract saved to changes.json")
+    # with open("changes.json", "w") as f:
+    #     json.dump(relevant_rules, f, indent=2)
+    # print("📁 Canonical contract saved to changes.json")
 
-    print("\n==================================================")
-    print("--- [Stage 3] Matching Usages & Patching Code ---")
-    print("==================================================")
-    report = man_extract(relevant_rules)
-    print(f" Matches report generated for patcher: {json.dumps(report, indent=2)}")
+    # print("\n==================================================")
+    # print("--- [Stage 3] Matching Usages & Patching Code ---")
+    # print("==================================================")
+    # report = man_extract(relevant_rules)
+    # print(f" Matches report generated for patcher: {json.dumps(report, indent=2)}")
 
-    target_version = "v1.0.0"  # Target major version boundary
+    # target_version = "v1.0.0"  # Target major version boundary
 
-    print(report, relevant_rules, target_version)
-    factored_code = code_patcher('before.py', report, relevant_rules, target_version)
+    # print(report, relevant_rules, target_version)
+
+    # factored_code = code_patcher('before.py', report, relevant_rules, target_version)
     
-    print("\n--- Patched Code Output ---")
-    print(factored_code)
+    # print("\n--- Patched Code Output ---")
+    # print(factored_code)
 
-    return factored_code, report, relevant_rules, target_version
+    # return factored_code, report, relevant_rules, target_version
 
 
 # ==================================================
@@ -287,3 +294,69 @@ def run_chain_migration(package_name: str):
 
 #     else:
 #         print(f"\n⚠️ Pipeline halted due to verification status: {pr.status}")
+
+
+def scraper(pkg_name, current_version, target_version, stage0_symbols):
+
+    print(f"\n==================================================")
+    print(f"--- [Stage 1] Multi-Boundary Chain Ingestion ---")
+    print(f"==================================================")
+    
+    target_version = target_version
+        
+    # Executes get_migration_chain + merge_rule_chain across all major version jumps
+    composed_rules, doc_text = run_stage1_pipeline(pkg_name, current_version=current_version, target_version=target_version)
+    
+    
+    
+    if not composed_rules:
+        print(
+            "⚠️ Warning: No migration rules extracted across the version chain!"
+        )
+        return None, [], [], target_version
+    
+    print("\n==================================================")
+    print("--- [Stage 2] Relevance & Completeness Audit ---")
+    print("==================================================")
+    dynamic_stage0_symbols = stage0_symbols
+    audit = evaluate_relevance_and_completeness(dynamic_stage0_symbols, composed_rules, doc_text)
+
+    raw_missing = audit.get('missing_symbols', [])
+    filtered_missing = [
+        sym for sym in raw_missing 
+        if not (sym.endswith(".chat.completions.create") and not sym.startswith("openai."))
+    ]
+    
+    print(f" Expected Affected Symbols: {audit['expected_affected_symbols']}")
+    print(f" Missing Symbols: {audit['missing_symbols']}")
+
+    is_genuinely_complete = len(filtered_missing) == 0
+    if not is_genuinely_complete:
+        print(f"🚨 WARNING: Genuinely missing rule extractions detected: {filtered_missing}")
+    else:
+        print("✅ Extraction Completeness Audit Passed (ignoring already-migrated client calls)!")
+
+    relevant_rules = audit["relevant_records"]
+
+    with open("changes.json", "w") as f:
+        json.dump(relevant_rules, f, indent=2)
+    print("📁 Canonical contract saved to changes.json")
+
+
+    print("\n==================================================")
+    print("--- [Stage 3] Matching Usages & Patching Code ---")
+    print("==================================================")
+    report = man_extract(relevant_rules)
+    print(f" Matches report generated for patcher: {json.dumps(report, indent=2)}")
+
+    # target_version = "v1.0.0"  # Target major version boundary
+
+    print(report, relevant_rules, target_version)
+
+    return report, relevant_rules
+
+
+
+
+
+

@@ -1,9 +1,8 @@
 # sma/pipeline.py
-from aston.axios import code_patcher, stage0_symbols, scraper
+from aston.axios import code_patcher, stage0, scraper
 from aston.docker import verify_single_file_in_docker, VerificationResult
 from aston.watcher import watcher
 from aston.scanner import parser
-from aston.relevance import canonicalize_usage
 from pathlib import Path
 
 
@@ -29,7 +28,7 @@ def run_for_repo(path : str):
 
     for change in breaking_changes:
 
-        stage0_symbols = stage0_symbols(change["pkg_name"], parses)
+        stage0_symbols = stage0(change["pkg_name"], parses)
         report, relevant_rules = scraper(change["pkg_name"], change["current_version"], change["target_version"], stage0_symbols)
 
         all_rules.append({
@@ -55,7 +54,7 @@ def run_for_repo(path : str):
     # with open('/demo/sample.py', "r") as f:
     #     source_code = f.read()
 
-    factored_code = code_patcher('/demo/sample.py', all_reports, all_rules, all_tar_vers, all_cur_vers)
+    factored_code = code_patcher('before.py', all_reports, all_rules, all_tar_vers, all_cur_vers)
 
 
 

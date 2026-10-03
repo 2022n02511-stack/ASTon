@@ -13,7 +13,7 @@ response = openai.ChatCompletion.create(
     messages=[
         {"role": "user", "content": "Hello from legacy OpenAI"}
     ]
-]
+)
 
 # 3. Standard requests library usage (second module)
 api_response = requests.get("https://httpbin.org/get")

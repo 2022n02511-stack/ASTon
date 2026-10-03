@@ -20,7 +20,8 @@ def watcher(path : str) -> dict:
             for line in file.read_text(encoding="utf-8").splitlines():
                 line = line.strip()    
 
-                cur_ver_bump, tar_ver_bump = None
+                cur_ver_bump = None 
+                tar_ver_bump = None
                 # print(line)
 
                 if not line or line.startswith("#") or line.startswith("-"):

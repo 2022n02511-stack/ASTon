@@ -19,7 +19,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "check" and args.run:
-        run_for_repo(repo_path=args.path)
+        run_for_repo(args.path)
 
 
 if __name__ == "__main__":
