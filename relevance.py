@@ -1,5 +1,6 @@
 import re
 
+
 def normalize_api_symbol(symbol: str) -> str:
     """
     Normalize API symbols so syntactic differences such as

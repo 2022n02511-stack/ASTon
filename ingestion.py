@@ -90,7 +90,7 @@ def is_candidate_url(url: str) -> bool:
     url_lower = url.lower()
     return (
         "github.com" in url_lower and any(path in url_lower for path in ["/issues/", "/discussions/", "/pull/", "/wiki/"])
-    ) or any(term in url_lower for term in ["migration", "upgrade", "breaking", "changelog", "v1", "v2", "v3", "742", "631"])
+    ) or any(term in url_lower for term in ["migration", "upgrade", "breaking", "changelog"])
 
 def extract_candidate_urls_from_text(text: str) -> list[str]:
     """Extracts external candidate URLs and cleans trailing punctuation."""
@@ -260,17 +260,9 @@ def run_stage1_pipeline(
     engine.
     """
 
-    current_version = (
-        current_version
-        or get_installed_version(package_name)
-        or "0.28.1"
-    )
+    current_version = current_version
 
-    target_version = (
-        target_version
-        or get_latest_pypi_version(package_name)
-        or "1.0.0"
-    )
+    target_version = target_version
 
     repo = resolve_github_repo(package_name)
 

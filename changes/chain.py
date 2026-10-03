@@ -25,6 +25,7 @@ from requests.exceptions import Timeout, ConnectionError
 from urllib3.exceptions import ProtocolError
 
 
+
 def _github_headers() -> dict:
     """
     Unauthenticated GitHub API calls are capped at 60/hour — easy to hit
