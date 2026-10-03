@@ -7,9 +7,9 @@ from typing import Optional
 
 class VerificationResult(str, Enum):
     PASS = "PASS"
-    MIGRATION_ERROR = "MIGRATION_ERROR"         # Syntax error, missing attribute, bad method signature
-    ENVIRONMENT_ERROR = "ENVIRONMENT_ERROR"     # Docker build fail, permission denied, missing dependency
-    EXTERNAL_SERVICE_ERROR = "EXTERNAL_SERVICE_ERROR" # Uncaught API/network errors
+    MIGRATION_ERROR = "MIGRATION_ERROR"
+    ENVIRONMENT_ERROR = "ENVIRONMENT_ERROR"
+    EXTERNAL_SERVICE_ERROR = "EXTERNAL_SERVICE_ERROR"
     TIMEOUT = "TIMEOUT"
 
 @dataclass
@@ -21,7 +21,7 @@ class VerificationOutput:
     raw_stderr: Optional[str] = None
     raw_stdout: Optional[str] = None
 
-def verify_single_file_in_docker(target_file: str = "before.py", package_req: str = "openai>=1.0.0") -> VerificationOutput:
+def verify_single_file_in_docker(target_file: str = "before.py", req_file: str = "requirements.txt") -> VerificationOutput:
     """
     Stage 4: Sandboxed Docker Verification with Mocked Network Calls & Rich Error Context.
     Uses direct COPY into the image to eliminate host volume permission conflicts.
@@ -30,8 +30,21 @@ def verify_single_file_in_docker(target_file: str = "before.py", package_req: st
     print("--- [Stage 4] Sandboxed Docker Verification ---")
     print("==================================================")
 
+    # Read requirements to determine which dependency-specific
+    # verification behavior is needed.
+    with open(req_file, "r") as f:
+        requirements = f.read().lower()
+
+    has_openai = any(
+        line.strip().startswith("openai")
+        for line in requirements.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+
     # 1. Generate the test wrapper script on host
-    mock_wrapper_content = f"""import sys
+
+    if has_openai:
+        mock_wrapper_content = f"""import sys
 import traceback
 from unittest.mock import patch, MagicMock
 
@@ -65,19 +78,38 @@ with patch("openai.resources.chat.completions.Completions.create", return_value=
         traceback.print_exc(file=sys.stderr)
         sys.exit(102)
 """
+    else:
+        mock_wrapper_content = f"""import sys
+import traceback
+
+try:
+    import {target_file.replace('.py', '')}
+    print("STAGE4_MOCK_EXECUTION_SUCCESS")
+except AttributeError as e:
+    print("STAGE4_ERROR_TYPE: AttributeError", file=sys.stderr)
+    print(f"STAGE4_ERROR_MSG: {{e}}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(101)
+except Exception as e:
+    print(f"STAGE4_ERROR_TYPE: {{type(e).__name__}}", file=sys.stderr)
+    print(f"STAGE4_ERROR_MSG: {{e}}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(102)
+"""
 
     with open("run_mocked_test.py", "w") as f:
         f.write(mock_wrapper_content)
 
     # 2. Solution A: COPY files into Dockerfile & explicitly grant read permissions
- # In docker_sandbox.py
+    # In docker_sandbox.py
     dockerfile_content = f"""FROM python:3.11-slim
 
 WORKDIR /app
 
 ENV OPENAI_API_KEY=sk-test-dummy-key-for-verification-only
 
-RUN pip install --no-cache-dir "openai>=1.0.0" httpx requests
+COPY {req_file} /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY {target_file} /app/{target_file}
 COPY run_mocked_test.py /app/run_mocked_test.py

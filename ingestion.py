@@ -11,6 +11,7 @@ from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_i
 from changes.chain import get_migration_chain, merge_rule_chain
 from mistralai.client import Mistral
 
+
 load_dotenv()
 
 # API_KEY = os.environ.get("GEMINI_API_KEY_1") or os.environ.get("GEMINI_API_KEY")

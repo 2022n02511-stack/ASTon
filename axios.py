@@ -78,7 +78,7 @@ def man_extract(rules: list):
 
     return report      
 
-def code_patcher(source_code: str, matches: list, rules: list, target_version: str, repair_context: dict | None = None):
+def code_patcher(source_code: str, matches: list, rules: list, target_version: list, current_version : list, repair_context: dict | None = None):
     """
     Stage 3 / Stage 5 AST and LLM Code Patcher.
     ISOLATION GUARANTEE: If rules or matches are empty, strictly return original code!
@@ -96,13 +96,15 @@ def code_patcher(source_code: str, matches: list, rules: list, target_version: s
 
     cont = f"""
 
-    MIGRATION_RULES: 
+    MIGRATION_RULES_FOR_EACH_DEPENDENCY: 
     {json.dumps(rules, indent=2)}
 
-    MATCHES/AFFECTED_USAGES: 
+    MATCHES/AFFECTED_USAGES_FOR_EACH_DEPENDENCY: 
     {json.dumps(matches, indent=2)}
 
-    TARGET_DEPENDENCY_VERSION: 
+    CURRENT_DEPENDENCIES_VERSIONS
+
+    TARGET_DEPENDENCIES_VERSIONS: 
     {target_version}
 
     REPAIR_CONTEXT (Stage 5 Diagnostics if present): 
@@ -149,14 +151,14 @@ def code_patcher(source_code: str, matches: list, rules: list, target_version: s
 
     return clean
 
-def run_chain_migration(package_name: str):
+def stage0_symbols(package_name: str, parse):
     """
     Executes Stages 0–3 utilizing multi-boundary version discovery and rule composition.
     """
-    print(f"\n==================================================")
-    print(f"--- [Stage 0] Fetching Dynamic AST Scanned Usages ---")
-    print(f"==================================================")
-    parses = parser()
+    # print(f"\n==================================================")
+    # print(f"--- [Stage 0] Fetching Dynamic AST Scanned Usages ---")
+    # print(f"==================================================")
+    parses = parse
 
     stage0_records = [
     parse
@@ -170,26 +172,151 @@ def run_chain_migration(package_name: str):
     # dynamic_stage0_symbols = {parse['api_usage'] for parse in parses if parse['package'] == package_name}
     print(f" Dynamic AST Scanned Usages: {dynamic_stage0_symbols}")
 
+    return dynamic_stage0_symbols
+
+    # print(f"\n==================================================")
+    # print(f"--- [Stage 1] Multi-Boundary Chain Ingestion ---")
+    # print(f"==================================================")
+
+    # target_version = target_version
+    
+    # # Executes get_migration_chain + merge_rule_chain across all major version jumps
+    # composed_rules, doc_text = run_stage1_pipeline(package_name, current_version=current_version, target_version=target_version)
+
+
+
+    # if not composed_rules:
+    #     print(
+    #     "⚠️ Warning: No migration rules extracted across the version chain!"
+    #     )
+    #     return None, [], [], target_version
+
+    # print("\n==================================================")
+    # print("--- [Stage 2] Relevance & Completeness Audit ---")
+    # print("==================================================")
+    # audit = evaluate_relevance_and_completeness(dynamic_stage0_symbols, composed_rules, doc_text)
+
+    # raw_missing = audit.get('missing_symbols', [])
+    # filtered_missing = [
+    #     sym for sym in raw_missing 
+    #     if not (sym.endswith(".chat.completions.create") and not sym.startswith("openai."))
+    # ]
+    
+    # print(f" Expected Affected Symbols: {audit['expected_affected_symbols']}")
+    # print(f" Missing Symbols: {audit['missing_symbols']}")
+
+    # is_genuinely_complete = len(filtered_missing) == 0
+    # if not is_genuinely_complete:
+    #     print(f"🚨 WARNING: Genuinely missing rule extractions detected: {filtered_missing}")
+    # else:
+    #     print("✅ Extraction Completeness Audit Passed (ignoring already-migrated client calls)!")
+
+    # relevant_rules = audit["relevant_records"]
+
+    # with open("changes.json", "w") as f:
+    #     json.dump(relevant_rules, f, indent=2)
+    # print("📁 Canonical contract saved to changes.json")
+
+    # print("\n==================================================")
+    # print("--- [Stage 3] Matching Usages & Patching Code ---")
+    # print("==================================================")
+    # report = man_extract(relevant_rules)
+    # print(f" Matches report generated for patcher: {json.dumps(report, indent=2)}")
+
+    # target_version = "v1.0.0"  # Target major version boundary
+
+    # print(report, relevant_rules, target_version)
+
+    # factored_code = code_patcher('before.py', report, relevant_rules, target_version)
+    
+    # print("\n--- Patched Code Output ---")
+    # print(factored_code)
+
+    # return factored_code, report, relevant_rules, target_version
+
+
+# ==================================================
+# --- PIPELINE ENTRYPOINT & REPAIR LOOP (Stage 4 & 5) ---
+# ==================================================
+
+# Execute Stages 0 through 3
+# fixed_code, report, rules, target_version = run_chain_migration('openai')
+
+# if fixed_code:
+#     MAX_RETRIES = 3
+#     retry_count = 0
+
+#     # Execute Stage 4 Sandboxed Docker Verification
+#     pr = verify_single_file_in_docker(target_file="before.py", package_req="openai>=1.0.0")
+
+#     # --- Stage 5: Self-Healing Repair Loop ---
+#     while pr.status == VerificationResult.MIGRATION_ERROR and retry_count < MAX_RETRIES:
+#         retry_count += 1
+#         print(f"\n⚠️ Stage 4 Failed with {pr.error_type} (Attempt {retry_count}/{MAX_RETRIES})")
+#         print("Routing to Stage 5 Self-Healing Repair Loop...")
+
+#         repair_context = {
+#             "file_name": pr.target_file,
+#             "error_type": pr.error_type,
+#             "error_message": pr.error_message,
+#             "traceback": pr.raw_stderr,
+#             "attempted_code": open(pr.target_file).read()
+#         }
+
+#         # Re-patch code using error context
+#         fixed_code = code_patcher(
+#             'before.py', 
+#             report, 
+#             rules, 
+#             target_version, 
+#             repair_context=repair_context
+#         )
+
+#         # Re-verify in Docker sandbox
+#         pr = verify_single_file_in_docker(target_file="before.py", package_req="openai>=1.0.0")
+
+#     # --- Final Decision & User Prompt ---
+#     if pr.status == VerificationResult.PASS:
+#         print("\n✅ Sandboxed Verification Successful!")
+#         yes_no = input("Do you wanna patch it? [Y/n]: ").strip().lower()
+        
+#         if yes_no in ['y', 'yes', '']:
+#             with open("sample.py", 'w') as f:
+#                 f.write(fixed_code)
+#             print("🎉 Code successfully patched and saved to sample.py")
+#         else:
+#             print("Exit without applying patch.")
+
+#     elif pr.status == VerificationResult.MIGRATION_ERROR:
+#         print(f"\n❌ Stage 5 Repair Loop exhausted after {MAX_RETRIES} attempts. Manual intervention required.")
+
+#     else:
+#         print(f"\n⚠️ Pipeline halted due to verification status: {pr.status}")
+
+
+def scraper(pkg_name, current_version, target_version, stage0_symbols):
+
     print(f"\n==================================================")
     print(f"--- [Stage 1] Multi-Boundary Chain Ingestion ---")
     print(f"==================================================")
-
-    target_version = get_latest_pypi_version(package_name)
     
+    target_version = target_version
+        
     # Executes get_migration_chain + merge_rule_chain across all major version jumps
-    composed_rules, doc_text = run_stage1_pipeline(package_name, current_version="0.28.1", target_version=target_version)
-
-
-
+    composed_rules, doc_text = run_stage1_pipeline(pkg_name, current_version=current_version, target_version=target_version)
+    
+    
+    
     if not composed_rules:
         print(
-        "⚠️ Warning: No migration rules extracted across the version chain!"
+            "⚠️ Warning: No migration rules extracted across the version chain!"
         )
         return None, [], [], target_version
-
+    
     print("\n==================================================")
     print("--- [Stage 2] Relevance & Completeness Audit ---")
     print("==================================================")
+    dynamic_stage0_symbols = stage0_symbols
     audit = evaluate_relevance_and_completeness(dynamic_stage0_symbols, composed_rules, doc_text)
 
     raw_missing = audit.get('missing_symbols', [])
@@ -213,77 +340,21 @@ def run_chain_migration(package_name: str):
         json.dump(relevant_rules, f, indent=2)
     print("📁 Canonical contract saved to changes.json")
 
+
     print("\n==================================================")
     print("--- [Stage 3] Matching Usages & Patching Code ---")
     print("==================================================")
     report = man_extract(relevant_rules)
     print(f" Matches report generated for patcher: {json.dumps(report, indent=2)}")
 
-    target_version = "v1.0.0"  # Target major version boundary
+    # target_version = "v1.0.0"  # Target major version boundary
 
     print(report, relevant_rules, target_version)
-    factored_code = code_patcher('before.py', report, relevant_rules, target_version)
-    
-    print("\n--- Patched Code Output ---")
-    print(factored_code)
 
-    return factored_code, report, relevant_rules, target_version
+    return report, relevant_rules
 
 
-# ==================================================
-# --- PIPELINE ENTRYPOINT & REPAIR LOOP (Stage 4 & 5) ---
-# ==================================================
 
-# Execute Stages 0 through 3
-fixed_code, report, rules, target_version = run_chain_migration('openai')
 
-if fixed_code:
-    MAX_RETRIES = 3
-    retry_count = 0
 
-    # Execute Stage 4 Sandboxed Docker Verification
-    pr = verify_single_file_in_docker(target_file="before.py", package_req="openai>=1.0.0")
 
-    # --- Stage 5: Self-Healing Repair Loop ---
-    while pr.status == VerificationResult.MIGRATION_ERROR and retry_count < MAX_RETRIES:
-        retry_count += 1
-        print(f"\n⚠️ Stage 4 Failed with {pr.error_type} (Attempt {retry_count}/{MAX_RETRIES})")
-        print("Routing to Stage 5 Self-Healing Repair Loop...")
-
-        repair_context = {
-            "file_name": pr.target_file,
-            "error_type": pr.error_type,
-            "error_message": pr.error_message,
-            "traceback": pr.raw_stderr,
-            "attempted_code": open(pr.target_file).read()
-        }
-
-        # Re-patch code using error context
-        fixed_code = code_patcher(
-            'before.py', 
-            report, 
-            rules, 
-            target_version, 
-            repair_context=repair_context
-        )
-
-        # Re-verify in Docker sandbox
-        pr = verify_single_file_in_docker(target_file="before.py", package_req="openai>=1.0.0")
-
-    # --- Final Decision & User Prompt ---
-    if pr.status == VerificationResult.PASS:
-        print("\n✅ Sandboxed Verification Successful!")
-        yes_no = input("Do you wanna patch it? [Y/n]: ").strip().lower()
-        
-        if yes_no in ['y', 'yes', '']:
-            with open("sample.py", 'w') as f:
-                f.write(fixed_code)
-            print("🎉 Code successfully patched and saved to sample.py")
-        else:
-            print("Exit without applying patch.")
-
-    elif pr.status == VerificationResult.MIGRATION_ERROR:
-        print(f"\n❌ Stage 5 Repair Loop exhausted after {MAX_RETRIES} attempts. Manual intervention required.")
-
-    else:
-        print(f"\n⚠️ Pipeline halted due to verification status: {pr.status}")

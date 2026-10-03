@@ -1,26 +1,82 @@
 # sma/pipeline.py
-from aston.axios import run_chain_migration, code_patcher
+from aston.axios import code_patcher, stage0_symbols, scraper
 from aston.docker import verify_single_file_in_docker, VerificationResult
+from aston.watcher import watcher
+from aston.scanner import parser
+from aston.relevance import canonicalize_usage
+from pathlib import Path
 
 
-def run_for_repo():
+def run_for_repo(path : str):
 
-    fixed_code = None
-    report = None
-    rules = None
-    target_version = None
+    breaking_changes = watcher(path)
 
-    print("Starting ASTon...")
+    if isinstance(breaking_changes, str):
+        print(breaking_changes)
+        return
 
-    fixed_code, report, rules, target_version = run_chain_migration('openai')
+    parse = parser()
+
+    print(f"\n==================================================")
+    print(f"--- [Stage 0] Fetching Dynamic AST Scanned Usages ---")
+    print(f"==================================================")
+    parses = parse
+
+    all_rules = []
+    all_reports = []
+    all_cur_vers = []
+    all_tar_vers = []
+
+    for change in breaking_changes:
+
+        stage0_symbols = stage0_symbols(change["pkg_name"], parses)
+        report, relevant_rules = scraper(change["pkg_name"], change["current_version"], change["target_version"], stage0_symbols)
+
+        all_rules.append({
+            change["pkg_name"] : relevant_rules
+        })
+
+        all_reports.append({
+            change["pkg_name"] : report
+        })
+
+        all_cur_vers.append({
+            change["pkg_name"] : change["current_version"]
+        })
+
+        all_tar_vers.append({
+            change["pkg_name"] : change["target_version"]
+        })
 
 
-    if fixed_code:
+    # folder_path = Path()
+    # source_code = None
+
+    # with open('/demo/sample.py', "r") as f:
+    #     source_code = f.read()
+
+    factored_code = code_patcher('/demo/sample.py', all_reports, all_rules, all_tar_vers, all_cur_vers)
+
+
+
+        
+
+    # fixed_code = None
+    # report = None
+    # rules = None
+    # target_version = None
+
+    # print("Starting ASTon...")
+
+    # fixed_code, report, rules, target_version = run_chain_migration('openai')
+
+
+    if factored_code:
         MAX_RETRIES = 3
         retry_count = 0
 
         # Execute Stage 4 Sandboxed Docker Verification
-        pr = verify_single_file_in_docker(target_file="before.py", package_req="openai>=1.0.0")
+        pr = verify_single_file_in_docker(target_file="before.py", req_file = "requirements.txt")
 
         # --- Stage 5: Self-Healing Repair Loop ---
         while pr.status == VerificationResult.MIGRATION_ERROR and retry_count < MAX_RETRIES:
@@ -37,16 +93,17 @@ def run_for_repo():
             }
 
             # Re-patch code using error context
-            fixed_code = code_patcher(
+            factored_code = code_patcher(
                 'before.py', 
-                report, 
-                rules, 
-                target_version, 
+                all_reports, 
+                all_rules, 
+                all_tar_vers,
+                all_cur_vers, 
                 repair_context=repair_context
             )
 
             # Re-verify in Docker sandbox
-            pr = verify_single_file_in_docker(target_file="before.py", package_req="openai>=1.0.0")
+            pr = verify_single_file_in_docker(target_file="before.py", req_file="requirements.txt")
 
         # --- Final Decision & User Prompt ---
         if pr.status == VerificationResult.PASS:
@@ -55,7 +112,7 @@ def run_for_repo():
             
             if yes_no in ['y', 'yes', '']:
                 with open("sample.py", 'w') as f:
-                    f.write(fixed_code)
+                    f.write(factored_code)
                 print("🎉 Code successfully patched and saved to sample.py")
             else:
                 print("Exit without applying patch.")
