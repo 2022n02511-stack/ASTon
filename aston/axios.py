@@ -168,7 +168,7 @@ def code_patcher(source_code: str, matches: list, rules: list, target_version: l
 
     clean = clean_mistral_code(patched)
 
-    # print(clean)
+    print(clean)
 
     with open('before.py', 'w') as f:
         f.write(clean)

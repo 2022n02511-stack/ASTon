@@ -1,0 +1,25 @@
+REPAIR CONTEXT
+
+The previous migration was applied and then verified in the target environment.
+
+Verification result:
+MIGRATION_ERROR
+
+Failure:
+AttributeError: module 'openai' has no attribute 'proxies'
+
+Traceback:
+...
+
+Previous migrated code:
+...
+
+Your task is to repair the migration.
+
+IMPORTANT:
+- Diagnose the specific cause of the verification failure.
+- Do not assume the migration rule that produced the failing code is correct.
+- Re-evaluate the affected migration.
+- Do not change unrelated code.
+- Do not repeatedly alternate between previously failed replacements.
+- Return the complete corrected file.

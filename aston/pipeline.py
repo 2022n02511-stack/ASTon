@@ -8,6 +8,11 @@ from pathlib import Path
 
 def run_for_repo(path : str):
 
+    rep_con = None
+
+    with open('repair_context.txt', 'r') as f:
+        rep_con = f.read()
+
     breaking_changes = watcher(path)
 
     if isinstance(breaking_changes, str):
@@ -75,7 +80,7 @@ def run_for_repo(path : str):
         retry_count = 0
 
         # Execute Stage 4 Sandboxed Docker Verification
-        pr = verify_single_file_in_docker(target_file="before.py", req_file = "requirements.txt")
+        pr = verify_single_file_in_docker(target_file="before.py", req_file = str(Path(path) / "requirements.txt"))
 
         # --- Stage 5: Self-Healing Repair Loop ---
         while pr.status == VerificationResult.MIGRATION_ERROR and retry_count < MAX_RETRIES:
@@ -89,6 +94,7 @@ def run_for_repo(path : str):
                 "error_message": pr.error_message,
                 "traceback": pr.raw_stderr,
                 "attempted_code": open(pr.target_file).read()
+                "repair_context_as_system_prompt" : rep_con
             }
 
             # Re-patch code using error context
@@ -102,7 +108,7 @@ def run_for_repo(path : str):
             )
 
             # Re-verify in Docker sandbox
-            pr = verify_single_file_in_docker(target_file="before.py", req_file="requirements.txt")
+            pr = verify_single_file_in_docker(target_file="before.py", req_file=str(Path(path) / "requirements.txt"))
 
         # --- Final Decision & User Prompt ---
         if pr.status == VerificationResult.PASS:

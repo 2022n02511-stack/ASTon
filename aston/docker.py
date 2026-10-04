@@ -109,7 +109,8 @@ WORKDIR /app
 ENV OPENAI_API_KEY=sk-test-dummy-key-for-verification-only
 
 COPY {req_file} /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+
+RUN pip install --no-cache-dir --default-timeout=120 --retries 5 -r requirements.txt
 
 COPY {target_file} /app/{target_file}
 COPY run_mocked_test.py /app/run_mocked_test.py
