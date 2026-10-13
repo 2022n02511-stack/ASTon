@@ -97,12 +97,14 @@ def man_extract(rules: list):
             "package": parse["package"],
             "detected_usage": parse["api_usage"],
             "canonical_usage": canonical_usage,
+            "instnace": parse["instance"],
+            "kwargs": parse["kwargs"],
             "change": extracted[key]
         })
 
     return report      
 
-def code_patcher(source_code: str, matches: list, rules: list, target_version: list, current_version : list, repair_context: dict | None = None):
+def code_patcher(source_code: str, matches: list, rules: list, target_version: list, current_version : list, repair_context: dict | None = None, raw_code_examples: list[str] | None = None):
     """
     Stage 3 / Stage 5 AST and LLM Code Patcher.
     ISOLATION GUARANTEE: If rules or matches are empty, strictly return original code!
@@ -126,10 +128,14 @@ def code_patcher(source_code: str, matches: list, rules: list, target_version: l
     MATCHES/AFFECTED_USAGES_FOR_EACH_DEPENDENCY: 
     {json.dumps(matches, indent=2)}
 
-    CURRENT_DEPENDENCIES_VERSIONS
+    CURRENT_DEPENDENCIES_VERSIONS:
+    {current_version}
 
     TARGET_DEPENDENCIES_VERSIONS: 
     {target_version}
+
+    RAW_CODE_EXAMPLES_FOR_CONTEXT_NOT_TAKE_AS_VALID_RULESETS:
+    {raw_code_examples}
 
     REPAIR_CONTEXT (Stage 5 Diagnostics if present): 
     {json.dumps(repair_context, indent=2) if repair_context else "None"}
@@ -305,7 +311,7 @@ def scraper(pkg_name, current_version, target_version, stage0_symbols):
     target_version = target_version
         
     # Executes get_migration_chain + merge_rule_chain across all major version jumps
-    composed_rules, doc_text = run_stage1_pipeline(pkg_name, current_version=current_version, target_version=target_version)
+    composed_rules, doc_text, raw_code_examples = run_stage1_pipeline(pkg_name, current_version=current_version, target_version=target_version, stage0_symbols=stage0_symbols)
     
     
     
@@ -353,7 +359,7 @@ def scraper(pkg_name, current_version, target_version, stage0_symbols):
 
     print(report, relevant_rules, target_version)
 
-    return report, relevant_rules
+    return report, relevant_rules, raw_code_examples
 
 
 

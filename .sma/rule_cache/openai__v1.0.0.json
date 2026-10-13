@@ -1,0 +1,335 @@
+{
+  "rules": [
+    {
+      "package": "openai",
+      "old_api": "openai.api_key",
+      "new_api": "OpenAI(api_key=...)",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "API key configuration moved from module-level attribute to client instantiation parameter",
+      "example_before": "openai.api_key = os.environ['OPENAI_API_KEY']",
+      "example_after": "client = OpenAI(\n  api_key=os.environ['OPENAI_API_KEY'],\n)"
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Completion.create",
+      "new_api": "client.completions.create",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Completion API moved to client instance method",
+      "example_before": "completion = openai.Completion.create(model='curie')",
+      "example_after": "completion = client.completions.create(model='curie')"
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.ChatCompletion.acreate",
+      "new_api": "await client.chat.completions.create",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Async chat completion API moved to async client instance method",
+      "example_before": "completion = openai.ChatCompletion.acreate(model=\"gpt-3.5-turbo\", messages=[{\"role\": \"user\", \"content\": \"Hello world\"}])",
+      "example_after": "client = AsyncOpenAI()\ncompletion = await client.chat.completions.create(model=\"gpt-3.5-turbo\", messages=[{\"role\": \"user\", \"content\": \"Hello world\"}])"
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Audio.transcribe",
+      "new_api": "client.audio.transcriptions.create",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Audio transcription API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Audio.translate",
+      "new_api": "client.audio.translations.create",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Audio translation API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.ChatCompletion.create",
+      "new_api": "client.chat.completions.create",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Chat completion API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Edit.create",
+      "new_api": "client.edits.create",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Edit API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Embedding.create",
+      "new_api": "client.embeddings.create",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Embedding API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.File.create",
+      "new_api": "client.files.create",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "File API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.File.list",
+      "new_api": "client.files.list",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "File list API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.File.retrieve",
+      "new_api": "client.files.retrieve",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "File retrieve API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.File.download",
+      "new_api": "client.files.retrieve_content",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "File download API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.cancel",
+      "new_api": "client.fine_tunes.cancel",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tune cancel API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.list",
+      "new_api": "client.fine_tunes.list",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tune list API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.list_events",
+      "new_api": "client.fine_tunes.list_events",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tune list events API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.stream_events",
+      "new_api": "client.fine_tunes.list_events(stream=True)",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tune stream events API moved to client instance method with stream parameter",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.retrieve",
+      "new_api": "client.fine_tunes.retrieve",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tune retrieve API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.delete",
+      "new_api": "client.fine_tunes.delete",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tune delete API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.create",
+      "new_api": "client.fine_tunes.create",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tune create API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.create",
+      "new_api": "client.fine_tuning.jobs.create",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tuning job create API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.cancel",
+      "new_api": "client.fine_tuning.jobs.cancel",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tuning job cancel API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.delete",
+      "new_api": "client.fine_tuning.jobs.create",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tuning job delete API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.retrieve",
+      "new_api": "client.fine_tuning.jobs.retrieve",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tuning job retrieve API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.list",
+      "new_api": "client.fine_tuning.jobs.list",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tuning job list API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.list_events",
+      "new_api": "client.fine_tuning.jobs.list_events",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Fine-tuning job list events API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Image.create",
+      "new_api": "client.images.generate",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Image create API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Image.create_variation",
+      "new_api": "client.images.create_variation",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Image create variation API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Image.create_edit",
+      "new_api": "client.images.edit",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Image create edit API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Model.list",
+      "new_api": "client.models.list",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Model list API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Model.delete",
+      "new_api": "client.models.delete",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Model delete API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Model.retrieve",
+      "new_api": "client.models.retrieve",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Model retrieve API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Moderation.create",
+      "new_api": "client.moderations.create",
+      "requires_instantiation": "Yes",
+      "migartion_type": "client_migration",
+      "migration_description": "Moderation create API moved to client instance method",
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.api_resources",
+      "new_api": "openai.resources",
+      "requires_instantiation": "No",
+      "migartion_type": "rename",
+      "migration_description": "Module name changed from api_resources to resources",
+      "example_before": null,
+      "example_after": null
+    }
+  ],
+  "raw_example_blocks": []
+}

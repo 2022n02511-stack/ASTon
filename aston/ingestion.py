@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
 from aston.changes.chain import get_migration_chain, merge_rule_chain
 from mistralai.client import Mistral
+import json
+from pathlib import Path
 
 
 load_dotenv()
@@ -31,17 +33,81 @@ class MigrationRule(BaseModel):
     old_api: str
     new_api: str
     requires_instantiation: str | None = None
+    migartion_type : str | None = None
+    migration_description: str | None = None
+    example_before: str | None = None 
+    example_after: str | None = None
 
 class MigrationRuleset(BaseModel):
     rules: list[MigrationRule]
+    raw_example_blocks: list[str] = []
 
 prompt = '''
 You are an expert static analysis and code refactoring engineer.
-Extract ALL breaking API signature updates, function renames, client instantiation changes, 
+Extract ALL breaking API signature updates, function renames, client instantiation changes,
 and parameter replacements from this migration text.
+
+For each rule, also provide:
+- migration_type: classify as "rename" (the call just has a new name, nothing else changes),
+  "configuration" (e.g. a value moves from a module-level attribute into a constructor or
+  client parameter), "client_migration" (requires instantiating a client object first), or
+  "signature_change" (parameters added, removed, or reordered).
+- description: one sentence explaining WHY this isn't a simple rename, if it isn't. If it
+  genuinely is a simple rename, leave this null.
+- example_before / example_after: if the documentation text below contains a code example
+  touching this specific API, extract ONLY the minimal relevant line(s) for THIS rule — do
+  NOT copy a larger surrounding block that also demonstrates unrelated changes to other APIs.
+  If no clean minimal snippet exists for this specific rule, leave both null rather than
+  inventing one or reusing a block that covers more than this one change.
+
+Separately, also return every full, distinct before/after code block you find in the
+documentation text in raw_example_blocks. These must be copied VERBATIM from the text below —
+do not write, complete, or invent example code yourself. If the text contains no clear
+before/after code examples, return an empty list for this field.
 
 Output strictly a JSON structure matching the schema.
 '''
+
+CACHE_DIR = Path(".sma/rule_cache")
+
+def _cache_path(package: str, tag: str) -> Path:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    safe_tag = tag.replace("/", "_")
+    return CACHE_DIR / f"{package}__{safe_tag}.json"
+
+def should_extract(doc_text: str, stage0_symbols: set[str]) -> bool:
+    """Skip extraction if the documentation doesn't mention any symbols present in the repo."""
+    if not stage0_symbols:
+        return True
+    doc_lower = doc_text.lower()
+    return any(
+        symbol.lower() in doc_lower or symbol.split(".")[-1].lower() in doc_lower
+        for symbol in stage0_symbols
+    )
+
+def extract_rules_cached(package: str, tag: str, doc_text: str, stage0_symbols: set[str]) -> MigrationRuleset:
+    """Caches extracted rules per package & tag permanently."""
+    cache_file = _cache_path(package, tag)
+    
+    if cache_file.exists():
+        print(f"  📦 Loading cached rules for {package} @ {tag}")
+        data = json.loads(cache_file.read_text())
+        return MigrationRuleset.model_validate(data)
+
+    # Pre-filter: skip LLM call if the symbols aren't even mentioned in the docs
+    if not should_extract(doc_text, stage0_symbols):
+        print(f"  ⏭️ Skipping {tag} — no relevant symbols mentioned, saving extraction cost.")
+        empty_ruleset = MigrationRuleset(rules=[], raw_example_blocks=[])
+        cache_file.write_text(empty_ruleset.model_dump_json(indent=2))
+        return empty_ruleset
+
+    print(f"  🤖 Extracting fresh rules for {package} @ {tag} via LLM...")
+    ruleset = extract_rules(doc_text)  # Returns MigrationRuleset object
+    
+    # Save using Pydantic's JSON serializer
+    cache_file.write_text(ruleset.model_dump_json(indent=2))
+    return ruleset
+
 
 # ==================================================
 # --- HELPER UTILITIES ---
@@ -52,6 +118,14 @@ def normalize_rule_symbols(rules: list[dict]) -> list[dict]:
         rule["old_api"] = rule["old_api"].replace("()", "").strip()
         rule["new_api"] = rule["new_api"].replace("()", "").strip()
     return rules
+
+def _validate_raw_blocks(blocks: list[str], source_text: str) -> list[str]:
+    """Keep only blocks that are genuinely verbatim substrings of doc_text.
+    Catches the model claiming to have 'extracted' a block that doesn't
+    actually appear in the source — same grounding check as rule validation,
+    applied here since raw_example_blocks' entire value proposition is being
+    real, checkable text rather than generated text."""
+    return [b for b in blocks if b.strip() and b.strip() in source_text]
 
 def get_installed_version(package_name: str) -> str | None:
     try:
@@ -235,8 +309,15 @@ def extract_rules(doc_text: str) -> list[dict]:
     )
 
     ruleset: MigrationRuleset = response.choices[0].message.parsed
-    new_rules = [rule.model_dump() for rule in ruleset.rules]
-    return normalize_rule_symbols(new_rules)
+    
+    # Normalize symbols and validate raw blocks
+    normalized_rules = normalize_rule_symbols([r.model_dump() for r in ruleset.rules])
+    validated_blocks = [b for b in ruleset.raw_example_blocks if b.strip() and b.strip() in truncated_text]
+
+    return MigrationRuleset(
+        rules=[MigrationRule(**r) for r in normalized_rules],
+        raw_example_blocks=validated_blocks,
+    )
 
 # ==================================================
 # --- STAGE 1 ORCHESTRATOR ENTRYPOINT ---
@@ -245,7 +326,8 @@ def extract_rules(doc_text: str) -> list[dict]:
 def run_stage1_pipeline(
     package_name: str,
     current_version: str | None = None,
-    target_version: str | None = None
+    target_version: str | None = None,
+    stage0_symbols: set[str] | None = None
 ) -> tuple[list[dict], str]:
     """
     Stage 1 Entrypoint.
@@ -300,6 +382,7 @@ def run_stage1_pipeline(
 
     rulesets_in_order = []
     migration_docs = []
+    all_raw_example_blocks = []
 
     for tag in tags_in_chain:
 
@@ -315,20 +398,24 @@ def run_stage1_pipeline(
                 f"{doc_content}"
             )
 
-            step_rules = extract_rules(doc_content)
-
-            rulesets_in_order.append(step_rules)
-
-            print(
-                f"  └─ Extracted {len(step_rules)} rules for {tag}"
+            # --- USE CACHED EXTRACTION HERE ---
+            ruleset = extract_rules_cached(
+                package_name, 
+                tag, 
+                doc_content, 
+                stage0_symbols or set()
             )
 
+            # Unpack rules and raw blocks correctly
+            rulesets_in_order.append([r.model_dump() if hasattr(r, 'model_dump') else r for r in ruleset.rules])
+            if hasattr(ruleset, 'raw_example_blocks'):
+                all_raw_example_blocks.extend(ruleset.raw_example_blocks)
+
+            # FIX: Use len(ruleset.rules) instead of len(step_rules)
+            print(f"  └─ Processed {len(ruleset.rules)} rules for {tag}")
         else:
+            print(f"  └─ ⚠️ No migration docs found for {tag}, skipping step.")
 
-            print(
-                f"  └─ ⚠️ No migration docs found for {tag}, "
-                f"skipping step."
-            )
 
     # ==================================================
     # 3. Compose rules across version steps
@@ -356,4 +443,4 @@ def run_stage1_pipeline(
         f"{len(migration_doc_text)} characters"
     )
 
-    return merged_rules, migration_doc_text
+    return merged_rules, migration_doc_text, all_raw_example_blocks

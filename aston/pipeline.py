@@ -4,6 +4,7 @@ from aston.docker import verify_single_file_in_docker, VerificationResult
 from aston.watcher import watcher
 from aston.scanner import parser
 from pathlib import Path
+from aston.ingestion import MigrationRuleset
 
 
 def run_for_repo(path : str):
@@ -34,7 +35,7 @@ def run_for_repo(path : str):
     for change in breaking_changes:
 
         stage0_symbols = stage0(change["pkg_name"], parses)
-        report, relevant_rules = scraper(change["pkg_name"], change["current_version"], change["target_version"], stage0_symbols)
+        report, relevant_rules, raw_code_examples = scraper(change["pkg_name"], change["current_version"], change["target_version"], stage0_symbols)
 
         all_rules.append({
             change["pkg_name"] : relevant_rules
@@ -59,7 +60,9 @@ def run_for_repo(path : str):
     # with open('/demo/sample.py', "r") as f:
     #     source_code = f.read()
 
-    factored_code = code_patcher('before.py', all_reports, all_rules, all_tar_vers, all_cur_vers)
+    # raw_code_examples = MigrationRuleset.raw_example_blocks
+
+    factored_code = code_patcher('before.py', all_reports, all_rules, all_tar_vers, all_cur_vers, None, raw_code_examples=raw_code_examples)
 
 
 
@@ -93,7 +96,7 @@ def run_for_repo(path : str):
                 "error_type": pr.error_type,
                 "error_message": pr.error_message,
                 "traceback": pr.raw_stderr,
-                "attempted_code": open(pr.target_file).read()
+                "attempted_code": open(pr.target_file).read(),
                 "repair_context_as_system_prompt" : rep_con
             }
 
@@ -104,7 +107,8 @@ def run_for_repo(path : str):
                 all_rules, 
                 all_tar_vers,
                 all_cur_vers, 
-                repair_context=repair_context
+                repair_context=repair_context,
+                raw_code_examples=raw_code_examples
             )
 
             # Re-verify in Docker sandbox

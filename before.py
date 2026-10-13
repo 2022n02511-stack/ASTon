@@ -1,14 +1,14 @@
 import os
 import openai
+from openai import OpenAI
 import requests
 
 # 1. Non-call property and error references
-api_key = openai.api_key
-base_url = openai.base_url
-proxy_setting = openai.proxies
+client = OpenAI(api_key=openai.api_key)
+base_url = client.base_url
+proxy_setting = client.proxy
 
 # 2. Legacy OpenAI call (v0.28.1 style)
-client = openai.OpenAI()
 response = client.chat.completions.create(
     model="gpt-3.5-turbo",
     messages=[
@@ -22,6 +22,6 @@ print(api_response.status_code)
 
 # 4. Error handling reference
 try:
-    err_class = openai.BadRequestError
+    err_class = openai.InvalidRequestError
 except Exception:
     pass

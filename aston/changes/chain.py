@@ -141,30 +141,12 @@ def get_migration_chain(repo: str, old_version: str, new_version: str) -> list[s
 
 
 def merge_rule_chain(rulesets_in_order: list[list[dict]]) -> list[dict]:
-    """
-    Composes rules across multiple version-boundary steps into one final
-    mapping. Each ruleset in `rulesets_in_order` is what extract_rules()
-    returned for one step, in chain order (earliest boundary first).
-
-    Core logic: an existing tracked rule's `old_api` stays fixed at the
-    ORIGINAL symbol a codebase might still be calling, but its `new_api`
-    gets updated forward each time a later step shows that intermediate
-    symbol got renamed again. A rule whose old_api was never seen before
-    is a genuinely new tracked rename, starting fresh at this step.
-    """
-    merged: dict[str, dict] = {}  # keyed by ORIGINAL old_api
+    merged: dict[str, dict] = {}
 
     for ruleset in rulesets_in_order:
         step_by_old = {r["old_api"]: r for r in ruleset}
-
-        # 1. Forward-compose: does this step rename something we're
-        #    already tracking as an intermediate new_api? Track exactly
-        #    which of THIS STEP's old_api keys got consumed this way —
-        #    that's the set to exclude below, not a snapshot of merged's
-        #    final new_api values (which had already moved past the
-        #    intermediate symbol by the time we'd compute it that way,
-        #    causing the intermediate to leak through as its own entry).
         consumed_this_step: set[str] = set()
+
         for original_old_api, rule in merged.items():
             current_new_api = rule["new_api"]
             if current_new_api in step_by_old:
@@ -172,12 +154,20 @@ def merge_rule_chain(rulesets_in_order: list[list[dict]]) -> list[dict]:
                 consumed_this_step.add(current_new_api)
                 rule["new_api"] = later_rule["new_api"]
                 rule["requires_instantiation"] = (
-                    later_rule.get("requires_instantiation")
-                    or rule.get("requires_instantiation")
+                    later_rule.get("requires_instantiation") or rule.get("requires_instantiation")
                 )
+                # BUGFIX: migration_type and description describe the FINAL
+                # transformation's nature, same reasoning as new_api — a rule
+                # classified "rename" at v1 but reclassified "configuration"
+                # at v2 (this exact composition) needs the v2 classification,
+                # not the stale v1 one. Previously these two fields were never
+                # touched after first occurrence.
+                rule["migration_type"] = later_rule.get("migration_type") or rule.get("migration_type")
+                rule["description"] = later_rule.get("description") or rule.get("description")
+                if rule.get("example_before") is None:
+                    rule["example_before"] = later_rule.get("example_before")
+                rule["example_after"] = later_rule.get("example_after")
 
-        # 2. Track genuinely new rules from this step — skip anything
-        #    that was just consumed above as an intermediate symbol.
         for old_api, rule in step_by_old.items():
             if old_api not in merged and old_api not in consumed_this_step:
                 merged[old_api] = dict(rule)

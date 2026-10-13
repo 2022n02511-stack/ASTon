@@ -1,26 +1,22 @@
 [
   {
     "package": "openai",
-    "old_api": "openai.api_base",
-    "new_api": "openai.base_url",
-    "requires_instantiation": null
-  },
-  {
-    "package": "openai",
-    "old_api": "openai.proxy",
-    "new_api": "openai.proxies",
-    "requires_instantiation": null
-  },
-  {
-    "package": "openai",
-    "old_api": "openai.InvalidRequestError",
-    "new_api": "openai.BadRequestError",
-    "requires_instantiation": null
+    "old_api": "openai.api_key",
+    "new_api": "OpenAI(api_key=...)",
+    "requires_instantiation": "Yes",
+    "migartion_type": "client_migration",
+    "migration_description": "API key configuration moved from module-level attribute to client instantiation parameter",
+    "example_before": "openai.api_key = os.environ['OPENAI_API_KEY']",
+    "example_after": "client = OpenAI(\n  api_key=os.environ['OPENAI_API_KEY'],\n)"
   },
   {
     "package": "openai",
     "old_api": "openai.ChatCompletion.create",
     "new_api": "client.chat.completions.create",
-    "requires_instantiation": null
+    "requires_instantiation": "Yes",
+    "migartion_type": "client_migration",
+    "migration_description": "Chat completion API moved to client instance method",
+    "example_before": null,
+    "example_after": null
   }
 ]
