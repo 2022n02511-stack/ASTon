@@ -1,131 +1,182 @@
+"""Stage 1: discover migration documentation, extract rules, and preserve examples."""
+
+import base64
+import hashlib
+import json
 import os
 import re
-import requests
-from typing import Optional
-from importlib.metadata import version, PackageNotFoundError
-from dotenv import load_dotenv
-from google import genai
-from google.genai import errors
-from pydantic import BaseModel
-from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
-from aston.changes.chain import get_migration_chain, merge_rule_chain
-from mistralai.client import Mistral
-import json
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import Any, Optional
+
+import requests
+from dotenv import load_dotenv
+from mistralai.client import Mistral
+from pydantic import BaseModel, Field
+
+from aston.changes.chain import get_migration_chain, merge_rule_chain
 
 
 load_dotenv()
 
-# API_KEY = os.environ.get("GEMINI_API_KEY_1") or os.environ.get("GEMINI_API_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+API_KEY = os.getenv("MISTRAL_API_KEY")
+client = Mistral(api_key=API_KEY) if API_KEY else None
 
-# client = genai.Client(api_key=API_KEY)
+GITHUB_API = "https://api.github.com"
+REQUEST_TIMEOUT = 20
+CACHE_DIR = Path(".sma/rule_cache_v3")
 
-API_KEY = os.environ.get("MISTRAL_API_KEY")
-client = Mistral(api_key=API_KEY)
-
-# ==================================================
-# --- SCHEMAS & PROMPTS ---
-# ==================================================
 
 class MigrationRule(BaseModel):
     package: str
     old_api: str
     new_api: str
     requires_instantiation: str | None = None
-    migartion_type : str | None = None
-    migration_description: str | None = None
-    example_before: str | None = None 
+    migration_type: str | None = None
+    description: str | None = None
+    example_before: str | None = None
     example_after: str | None = None
 
+
 class MigrationRuleset(BaseModel):
-    rules: list[MigrationRule]
-    raw_example_blocks: list[str] = []
+    rules: list[MigrationRule] = Field(default_factory=list)
+    raw_example_blocks: list[str] = Field(default_factory=list)
 
-prompt = '''
-You are an expert static analysis and code refactoring engineer.
-Extract ALL breaking API signature updates, function renames, client instantiation changes,
-and parameter replacements from this migration text.
 
-For each rule, also provide:
-- migration_type: classify as "rename" (the call just has a new name, nothing else changes),
-  "configuration" (e.g. a value moves from a module-level attribute into a constructor or
-  client parameter), "client_migration" (requires instantiating a client object first), or
-  "signature_change" (parameters added, removed, or reordered).
-- description: one sentence explaining WHY this isn't a simple rename, if it isn't. If it
-  genuinely is a simple rename, leave this null.
-- example_before / example_after: if the documentation text below contains a code example
-  touching this specific API, extract ONLY the minimal relevant line(s) for THIS rule — do
-  NOT copy a larger surrounding block that also demonstrates unrelated changes to other APIs.
-  If no clean minimal snippet exists for this specific rule, leave both null rather than
-  inventing one or reusing a block that covers more than this one change.
+prompt = """
+You are an expert static-analysis and code-migration engineer.
+Extract migration rules supported by the supplied documentation only.
 
-Separately, also return every full, distinct before/after code block you find in the
-documentation text in raw_example_blocks. These must be copied VERBATIM from the text below —
-do not write, complete, or invent example code yourself. If the text contains no clear
-before/after code examples, return an empty list for this field.
+Return a rule for each explicitly documented API rename, removed API, signature
+change, parameter replacement, or configuration/client-instantiation change.
+Do not infer a replacement merely because a name looks similar. If the target
+API cannot be determined from the source, do not invent it.
 
-Output strictly a JSON structure matching the schema.
-'''
+For every rule:
+- package: use the package name supplied by the user message.
+- old_api: the old fully qualified API symbol, when the source supports it.
+- new_api: the documented replacement. For removals without a replacement,
+  use the exact string "UNRESOLVED: no documented replacement".
+- requires_instantiation: explain the required client setup briefly, or null.
+- migration_type: one of rename, configuration, client_migration,
+  signature_change, removal, or unknown.
+- description: short explanation of any non-trivial transformation, or null.
+- example_before / example_after: only minimal snippets explicitly shown in
+  the source for this specific rule. Otherwise null.
 
-CACHE_DIR = Path(".sma/rule_cache")
+Also return raw_example_blocks: full, distinct before/after migration examples
+copied verbatim from the supplied documentation. Do not complete or invent code.
+If no such examples are present, return [].
 
-def _cache_path(package: str, tag: str) -> Path:
+Output only data matching the response schema.
+"""
+
+
+def _github_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Aston-dependency-migration-tool",
+    }
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    return headers
+
+
+def _cache_path(
+    package: str,
+    tag: str,
+    doc_text: str,
+    stage0_symbols: set[str],
+) -> Path:
+    """Cache by source text and scanner-symbol set so stale/empty cache entries
+    do not survive changes to the documentation or the relevant usages."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    safe_tag = tag.replace("/", "_")
-    return CACHE_DIR / f"{package}__{safe_tag}.json"
+    digest_input = (
+        doc_text + "\n--SYMBOLS--\n" + "\n".join(sorted(stage0_symbols))
+    ).encode("utf-8", errors="replace")
+    digest = hashlib.sha256(digest_input).hexdigest()[:16]
+    safe_package = re.sub(r"[^A-Za-z0-9_.-]", "_", package)
+    safe_tag = re.sub(r"[^A-Za-z0-9_.-]", "_", tag)
+    return CACHE_DIR / f"{safe_package}__{safe_tag}__{digest}.json"
+
 
 def should_extract(doc_text: str, stage0_symbols: set[str]) -> bool:
-    """Skip extraction if the documentation doesn't mention any symbols present in the repo."""
+    """Cheap gate only; this does not claim to prove all usages are covered."""
     if not stage0_symbols:
         return True
+
     doc_lower = doc_text.lower()
-    return any(
-        symbol.lower() in doc_lower or symbol.split(".")[-1].lower() in doc_lower
-        for symbol in stage0_symbols
-    )
+    for symbol in stage0_symbols:
+        normalized = symbol.strip().lower()
+        if normalized and normalized in doc_lower:
+            return True
 
-def extract_rules_cached(package: str, tag: str, doc_text: str, stage0_symbols: set[str]) -> MigrationRuleset:
-    """Caches extracted rules per package & tag permanently."""
-    cache_file = _cache_path(package, tag)
-    
-    if cache_file.exists():
-        print(f"  📦 Loading cached rules for {package} @ {tag}")
-        data = json.loads(cache_file.read_text())
-        return MigrationRuleset.model_validate(data)
+        # A final-name fallback helps docs that omit the package prefix, but
+        # avoid very generic identifiers that cause needless extraction calls.
+        leaf = normalized.rsplit(".", 1)[-1]
+        generic_names = {
+            "create", "client", "open", "close", "get", "set", "update",
+            "delete", "request", "response", "error", "chat", "embedding",
+        }
+        if (
+            len(leaf) >= 5
+            and leaf not in generic_names
+            and re.search(rf"(?<![a-z0-9_]){re.escape(leaf)}(?![a-z0-9_])", doc_lower)
+        ):
+            return True
 
-    # Pre-filter: skip LLM call if the symbols aren't even mentioned in the docs
-    if not should_extract(doc_text, stage0_symbols):
-        print(f"  ⏭️ Skipping {tag} — no relevant symbols mentioned, saving extraction cost.")
-        empty_ruleset = MigrationRuleset(rules=[], raw_example_blocks=[])
-        cache_file.write_text(empty_ruleset.model_dump_json(indent=2))
-        return empty_ruleset
+    return False
 
-    print(f"  🤖 Extracting fresh rules for {package} @ {tag} via LLM...")
-    ruleset = extract_rules(doc_text)  # Returns MigrationRuleset object
-    
-    # Save using Pydantic's JSON serializer
-    cache_file.write_text(ruleset.model_dump_json(indent=2))
-    return ruleset
-
-
-# ==================================================
-# --- HELPER UTILITIES ---
-# ==================================================
 
 def normalize_rule_symbols(rules: list[dict]) -> list[dict]:
-    for rule in rules:
-        rule["old_api"] = rule["old_api"].replace("()", "").strip()
-        rule["new_api"] = rule["new_api"].replace("()", "").strip()
-    return rules
+    normalized = []
+    for source in rules:
+        rule = dict(source)
+        for key in ("old_api", "new_api"):
+            value = rule.get(key)
+            if isinstance(value, str):
+                rule[key] = value.replace("()", "").strip()
+        normalized.append(rule)
+    return normalized
+
 
 def _validate_raw_blocks(blocks: list[str], source_text: str) -> list[str]:
-    """Keep only blocks that are genuinely verbatim substrings of doc_text.
-    Catches the model claiming to have 'extracted' a block that doesn't
-    actually appear in the source — same grounding check as rule validation,
-    applied here since raw_example_blocks' entire value proposition is being
-    real, checkable text rather than generated text."""
-    return [b for b in blocks if b.strip() and b.strip() in source_text]
+    """Only retain exact snippets present in the source passed to the model."""
+    result = []
+    seen = set()
+    for block in blocks:
+        cleaned = block.strip()
+        if cleaned and cleaned in source_text and cleaned not in seen:
+            result.append(cleaned)
+            seen.add(cleaned)
+    return result
+
+
+def extract_rules_cached(
+    package: str,
+    tag: str,
+    doc_text: str,
+    stage0_symbols: set[str],
+) -> MigrationRuleset:
+    cache_file = _cache_path(package, tag, doc_text, stage0_symbols)
+
+    if cache_file.exists():
+        try:
+            return MigrationRuleset.model_validate_json(cache_file.read_text())
+        except Exception as exc:
+            print(f"  ⚠️ Invalid cache for {tag}; re-extracting ({exc})")
+
+    if not should_extract(doc_text, stage0_symbols):
+        print(f"  ⏭️ {tag}: no scanned symbol appears in source; skipping LLM extraction.")
+        result = MigrationRuleset()
+        cache_file.write_text(result.model_dump_json(indent=2))
+        return result
+
+    result = extract_rules(package, doc_text)
+    cache_file.write_text(result.model_dump_json(indent=2))
+    return result
+
 
 def get_installed_version(package_name: str) -> str | None:
     try:
@@ -133,314 +184,300 @@ def get_installed_version(package_name: str) -> str | None:
     except PackageNotFoundError:
         return None
 
+
 def get_latest_pypi_version(package_name: str) -> str | None:
-    url = f"https://pypi.org/pypi/{package_name}/json"
-    response = requests.get(url)
+    response = requests.get(
+        f"https://pypi.org/pypi/{package_name}/json",
+        timeout=REQUEST_TIMEOUT,
+    )
     if response.status_code == 200:
-        return response.json()["info"]["version"]
-    return None    
+        return response.json().get("info", {}).get("version")
+    return None
+
 
 def resolve_github_repo(package_name: str) -> Optional[str]:
-    url = f"https://pypi.org/pypi/{package_name}/json"
-    res = requests.get(url)
-    if res.status_code != 200:
+    response = requests.get(
+        f"https://pypi.org/pypi/{package_name}/json",
+        timeout=REQUEST_TIMEOUT,
+    )
+    if response.status_code != 200:
         return None
-    
-    info = res.json().get("info", {})
-    project_urls = info.get("project_urls") or {}
-    
-    for key, target_url in project_urls.items():
-        if "github.com" in target_url:
-            match = re.search(r"github\.com/([^/]+/[^/]+)", target_url)
-            if match:
-                return match.group(1).rstrip(".git")
+
+    project_urls = response.json().get("info", {}).get("project_urls") or {}
+    for target_url in project_urls.values():
+        match = re.search(r"github\.com/([^/]+/[^/]+)", target_url)
+        if match:
+            return match.group(1).removesuffix(".git").rstrip("/")
     return None
 
-# ==================================================
-# --- LINK-FOLLOWING INGESTION ENGINE ---
-# ==================================================
 
 def is_candidate_url(url: str) -> bool:
-    """Filter candidate URLs for GitHub discussions, issues, PRs, or migration docs."""
-    url_lower = url.lower()
+    lower = url.lower()
     return (
-        "github.com" in url_lower and any(path in url_lower for path in ["/issues/", "/discussions/", "/pull/", "/wiki/"])
-    ) or any(term in url_lower for term in ["migration", "upgrade", "breaking", "changelog"])
+        "github.com" in lower
+        and any(path in lower for path in ("/issues/", "/discussions/", "/pull/", "/wiki/"))
+    ) or any(term in lower for term in ("migration", "upgrade", "breaking", "changelog"))
+
 
 def extract_candidate_urls_from_text(text: str) -> list[str]:
-    """Extracts external candidate URLs and cleans trailing punctuation."""
-    url_pattern = r'https?://[^\s\)\>\]]+'
-    raw_urls = re.findall(url_pattern, text)
-    return [u.rstrip('.,;') for u in set(raw_urls) if is_candidate_url(u)]
+    pattern = r"https?://[^\s\)\>\]\}\"']+"
+    urls = {item.rstrip(".,;:") for item in re.findall(pattern, text)}
+    return sorted(url for url in urls if is_candidate_url(url))
+
 
 def fetch_page_content(url: str) -> str | None:
-    """
-    Fetches content via GitHub REST API for discussions and issues;
-    falls back to plain HTTP for standard markdown/web pages.
-    """
+    headers = _github_headers()
     try:
-        headers = {
-            "User-Agent": "Self-Maintaining-APIs-Pipeline",
-            "Accept": "application/vnd.github+json"
-        }
-        if GITHUB_TOKEN:
-            headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
-
-        # Handle GitHub Discussions via REST API
-        match_discussion = re.search(r"github\.com/([^/]+)/([^/]+)/discussions/(\d+)", url)
-        if match_discussion:
-            owner, repo, number = match_discussion.groups()
-            api_url = f"https://api.github.com/repos/{owner}/{repo}/discussions/{number}"
-            res = requests.get(api_url, headers=headers, timeout=30)
-            if res.status_code == 200:
-                data = res.json()
+        discussion = re.search(r"github\.com/([^/]+)/([^/]+)/discussions/(\d+)", url)
+        if discussion:
+            owner, repo, number = discussion.groups()
+            api_url = f"{GITHUB_API}/repos/{owner}/{repo}/discussions/{number}"
+            response = requests.get(api_url, headers=headers, timeout=REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                data = response.json()
                 return f"{data.get('title', '')}\n\n{data.get('body', '')}"[:15000]
 
-        # Handle GitHub Issues via REST API
-        match_issue = re.search(r"github\.com/([^/]+)/([^/]+)/issues/(\d+)", url)
-        if match_issue:
-            owner, repo, number = match_issue.groups()
-            api_url = f"https://api.github.com/repos/{owner}/{repo}/issues/{number}"
-            res = requests.get(api_url, headers=headers, timeout=8)
-            if res.status_code == 200:
-                data = res.json()
+        issue = re.search(r"github\.com/([^/]+)/([^/]+)/issues/(\d+)", url)
+        if issue:
+            owner, repo, number = issue.groups()
+            api_url = f"{GITHUB_API}/repos/{owner}/{repo}/issues/{number}"
+            response = requests.get(api_url, headers=headers, timeout=REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                data = response.json()
                 return f"{data.get('title', '')}\n\n{data.get('body', '')}"[:15000]
 
-        # Standard web/raw content fallback
-        res = requests.get(url, headers=headers, timeout=8)
-        if res.status_code == 200:
-            text = re.sub(r"<[^>]+>", " ", res.text)
-            lines = [line.strip() for line in text.splitlines() if line.strip()]
-            return "\n".join(lines)[:15000]
+        response = requests.get(
+            url,
+            headers={"User-Agent": "Aston-dependency-migration-tool"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        if response.status_code != 200:
+            return None
 
-    except Exception as e:
-        print(f"  ⚠️ Failed to fetch {url}: {e}")
+        # This is a lightweight HTML fallback, not a full Markdown/HTML parser.
+        text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", response.text)
+        text = re.sub(r"(?i)<br\s*/?>|</(p|div|li|pre|h[1-6])>", "\n", text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return "\n".join(lines)[:15000]
+    except requests.RequestException as exc:
+        print(f"  ⚠️ Failed to fetch {url}: {exc}")
+        return None
 
-    return None
 
 def collect_linked_sources(initial_text: str, max_depth: int = 2) -> list[str]:
-    """Follow migration-document links recursively up to max_depth."""
-    collected = []
-    visited = set()
+    collected: list[str] = []
+    visited: set[str] = set()
     current_level = [initial_text]
 
     for depth in range(max_depth + 1):
-        next_level = []
-
-        for text in current_level:
-            collected.append(text)
-            urls = extract_candidate_urls_from_text(text)
-
-            for url in urls:
+        next_level: list[str] = []
+        for source_text in current_level:
+            collected.append(source_text)
+            for url in extract_candidate_urls_from_text(source_text):
                 if url in visited:
                     continue
-
                 visited.add(url)
                 print(f"  🔗 Following migration link (depth {depth + 1}): {url}")
                 content = fetch_page_content(url)
-
                 if content and len(content) > 100:
                     print(f"    ✓ Retrieved {len(content)} characters")
                     next_level.append(content)
-
         current_level = next_level
         if not current_level:
             break
 
     return collected
 
-def discover_release_doc(repo: str, tag: str) -> str | None:
-    """Discovers release notes and recursively follows linked documents for a tag boundary."""
-    headers = {"Accept": "application/vnd.github+json"}
-    if GITHUB_TOKEN:
-        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
 
-    release_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
-    res = requests.get(release_url, headers=headers, timeout=30)
-    
-    if res.status_code == 200:
-        body = res.json().get("body", "")
-        if body:
-            print(f"  📥 Collected release notes for tag: {tag}")
-            linked_docs = collect_linked_sources(body, max_depth=2)
-            return "\n\n--- NEXT DOCUMENT IN CHAIN ---\n\n".join(linked_docs)[:30000]
+def _fetch_repo_file(repo: str, tag: str, filename: str) -> str | None:
+    url = f"{GITHUB_API}/repos/{repo}/contents/{filename}"
+    response = requests.get(
+        url,
+        params={"ref": tag},
+        headers=_github_headers(),
+        timeout=REQUEST_TIMEOUT,
+    )
+    if response.status_code != 200:
+        return None
 
+    data = response.json()
+    if data.get("encoding") == "base64" and data.get("content"):
+        try:
+            return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+        except (ValueError, TypeError):
+            return None
+
+    # Contents API may provide a download URL for larger files.
+    download_url = data.get("download_url")
+    if download_url:
+        raw = requests.get(download_url, timeout=REQUEST_TIMEOUT)
+        if raw.status_code == 200:
+            return raw.text
     return None
 
-# ==================================================
-# --- GEMINI RULE EXTRACTION ---
-# ==================================================
 
-@retry(
-    wait=wait_random_exponential(min=5, max=60),
-    stop=stop_after_attempt(4),
-    retry=retry_if_exception_type((errors.ClientError, errors.ServerError))
-)
-def extract_rules(doc_text: str) -> list[dict]:
-    """Extracts structured breaking change rules using Gemini structured outputs."""
+def discover_release_doc(repo: str, tag: str) -> str | None:
+    """Retrieve release notes, falling back to migration/changelog files at tag."""
+    release_url = f"{GITHUB_API}/repos/{repo}/releases/tags/{tag}"
+    try:
+        response = requests.get(
+            release_url,
+            headers=_github_headers(),
+            timeout=REQUEST_TIMEOUT,
+        )
+        body = response.json().get("body", "") if response.status_code == 200 else ""
+    except requests.RequestException as exc:
+        print(f"  ⚠️ Release lookup failed for {tag}: {exc}")
+        body = ""
+
+    if not body or len(body.strip()) < 20:
+        print(f"  ⚠️ No useful release notes for {tag}; checking repository files.")
+        candidates = (
+            "MIGRATION.md",
+            "migration.md",
+            "CHANGELOG.md",
+            "CHANGELOG.rst",
+            "CHANGES.md",
+            "docs/migration.md",
+            "docs/MIGRATION.md",
+            "docs/CHANGELOG.md",
+        )
+        found = []
+        for filename in candidates:
+            try:
+                content = _fetch_repo_file(repo, tag, filename)
+            except requests.RequestException as exc:
+                print(f"    ⚠️ Could not fetch {filename}: {exc}")
+                continue
+            if content and len(content.strip()) > 50:
+                found.append(f"=== SOURCE FILE: {filename} @ {tag} ===\n{content}")
+        body = "\n\n".join(found)
+
+    if not body or len(body.strip()) < 20:
+        print(f"  ❌ Unresolved boundary: no documentation source found for {tag}")
+        return None
+
+    print(f"  📥 Ingested documentation source for tag: {tag}")
+    linked_docs = collect_linked_sources(body, max_depth=2)
+    return "\n\n--- NEXT DOCUMENT IN CHAIN ---\n\n".join(linked_docs)[:30000]
+
+
+def extract_rules(package: str, doc_text: str) -> MigrationRuleset:
+    if not client:
+        raise RuntimeError("MISTRAL_API_KEY is not set; cannot extract migration rules.")
     if not doc_text or len(doc_text.strip()) < 30:
-        return []
+        return MigrationRuleset()
 
+    # Keep a hard limit because providers enforce request/token limits.
     truncated_text = doc_text[:20000]
-
-    # response = client.models.generate_content(
-    #     model="gemini-3.6-flash",
-    #     contents=f"{prompt}\n\nDocumentation:\n{truncated_text}",
-    #     config={
-    #         "response_mime_type": "application/json",
-    #         "response_schema": MigrationRuleset,
-    #     }
-    # )
-
     response = client.chat.parse(
         model="codestral-latest",
         messages=[
-            {
-                "role": "system",
-                "content": prompt,
-            },
+            {"role": "system", "content": prompt},
             {
                 "role": "user",
-                "content": f"Documentation:\n{truncated_text}",
+                "content": (
+                    f"Package name: {package}\n"
+                    "Extract rules only from the documentation below.\n\n"
+                    f"Documentation:\n{truncated_text}"
+                ),
             },
         ],
         response_format=MigrationRuleset,
         temperature=0,
     )
 
-    ruleset: MigrationRuleset = response.choices[0].message.parsed
-    
-    # Normalize symbols and validate raw blocks
-    normalized_rules = normalize_rule_symbols([r.model_dump() for r in ruleset.rules])
-    validated_blocks = [b for b in ruleset.raw_example_blocks if b.strip() and b.strip() in truncated_text]
+    parsed = response.choices[0].message.parsed
+    if parsed is None:
+        raise RuntimeError(f"Codestral returned no parsed ruleset for {package}")
 
+    normalized = normalize_rule_symbols([rule.model_dump() for rule in parsed.rules])
+    for rule in normalized:
+        # The package is known by the caller; do not trust a model-generated value.
+        rule["package"] = package
+
+    blocks = _validate_raw_blocks(parsed.raw_example_blocks, truncated_text)
     return MigrationRuleset(
-        rules=[MigrationRule(**r) for r in normalized_rules],
-        raw_example_blocks=validated_blocks,
+        rules=[MigrationRule.model_validate(rule) for rule in normalized],
+        raw_example_blocks=blocks,
     )
 
-# ==================================================
-# --- STAGE 1 ORCHESTRATOR ENTRYPOINT ---
-# ==================================================
 
 def run_stage1_pipeline(
     package_name: str,
     current_version: str | None = None,
     target_version: str | None = None,
-    stage0_symbols: set[str] | None = None
-) -> tuple[list[dict], str]:
-    """
-    Stage 1 Entrypoint.
-
-    Resolves the migration chain from current_version to target_version,
-    extracts rules at each major-version boundary, merges the rules, and
-    returns both:
-
-        1. merged structured migration rules
-        2. combined raw migration documentation
-
-    The raw documentation is required by the existing Stage 2 relevance
-    engine.
-    """
-
-    current_version = current_version
-
-    target_version = target_version
+    stage0_symbols: set[str] | None = None,
+) -> tuple[list[dict], str, list[dict]]:
+    """Return (merged_rules, combined_docs, boundary-tagged raw examples)."""
+    if not current_version or not target_version:
+        raise ValueError("current_version and target_version are required for migration-chain resolution.")
 
     repo = resolve_github_repo(package_name)
-
     if not repo:
-        print(
-            f"❌ Failed to resolve GitHub repository "
-            f"for package {package_name}"
-        )
-        return [], ""
+        print(f"❌ Failed to resolve GitHub repository for package {package_name}")
+        return [], "", []
 
     print(
-        f"📦 Resolving migration chain for "
-        f"'{package_name}' ({current_version} -> {target_version}) @ {repo}"
+        f"📦 Resolving migration chain for '{package_name}' "
+        f"({current_version} -> {target_version}) @ {repo}"
     )
 
-    # ==================================================
-    # 1. Discover major-version boundaries
-    # ==================================================
-
-    tags_in_chain = get_migration_chain(
-        repo,
-        current_version,
-        target_version
-    )
+    try:
+        tags_in_chain = get_migration_chain(repo, current_version, target_version)
+    except (requests.RequestException, ValueError) as exc:
+        print(f"❌ Could not resolve migration chain: {exc}")
+        return [], "", []
 
     if not tags_in_chain:
-        tags_in_chain = [f"v{target_version}"]
+        print("ℹ️ No version transition to process.")
+        return [], "", []
 
     print(f"🔗 Target Version Boundaries: {tags_in_chain}")
 
-    # ==================================================
-    # 2. Extract rules + preserve raw migration documents
-    # ==================================================
-
-    rulesets_in_order = []
-    migration_docs = []
-    all_raw_example_blocks = []
+    rulesets_in_order: list[list[dict]] = []
+    migration_docs: list[str] = []
+    all_raw_example_blocks: list[dict] = []
+    unresolved_boundaries: list[str] = []
 
     for tag in tags_in_chain:
-
         print(f"\n🔎 Ingesting boundary: {tag}...")
-
         doc_content = discover_release_doc(repo, tag)
 
-        if doc_content:
+        if not doc_content:
+            unresolved_boundaries.append(tag)
+            continue
 
-            # Keep the raw migration material for Stage 2.
-            migration_docs.append(
-                f"=== MIGRATION BOUNDARY: {tag} ===\n"
-                f"{doc_content}"
-            )
+        migration_docs.append(f"=== MIGRATION BOUNDARY: {tag} ===\n{doc_content}")
+        ruleset = extract_rules_cached(
+            package_name,
+            tag,
+            doc_content,
+            stage0_symbols or set(),
+        )
+        rulesets_in_order.append([rule.model_dump() for rule in ruleset.rules])
 
-            # --- USE CACHED EXTRACTION HERE ---
-            ruleset = extract_rules_cached(
-                package_name, 
-                tag, 
-                doc_content, 
-                stage0_symbols or set()
-            )
+        for block in ruleset.raw_example_blocks:
+            all_raw_example_blocks.append({
+                "boundary": tag,
+                "source": "release_notes_or_repository_migration_docs",
+                "code": block,
+            })
 
-            # Unpack rules and raw blocks correctly
-            rulesets_in_order.append([r.model_dump() if hasattr(r, 'model_dump') else r for r in ruleset.rules])
-            if hasattr(ruleset, 'raw_example_blocks'):
-                all_raw_example_blocks.extend(ruleset.raw_example_blocks)
+        print(f"  └─ Processed {len(ruleset.rules)} rules for {tag}")
 
-            # FIX: Use len(ruleset.rules) instead of len(step_rules)
-            print(f"  └─ Processed {len(ruleset.rules)} rules for {tag}")
-        else:
-            print(f"  └─ ⚠️ No migration docs found for {tag}, skipping step.")
+    if unresolved_boundaries:
+        print(
+            "⚠️ Unresolved documentation boundaries: "
+            + ", ".join(unresolved_boundaries)
+        )
+        print("⚠️ Coverage is incomplete until these boundaries have usable sources.")
 
+    merged_rules = merge_rule_chain(rulesets_in_order)
+    migration_doc_text = "\n\n".join(migration_docs)
 
-    # ==================================================
-    # 3. Compose rules across version steps
-    # ==================================================
-
-    merged_rules = merge_rule_chain(
-        rulesets_in_order
-    )
-
-    # ==================================================
-    # 4. Compose raw migration document
-    # ==================================================
-
-    migration_doc_text = "\n\n".join(
-        migration_docs
-    )
-
-    print(
-        f"\n✅ Rule Chain Composition Complete. "
-        f"Total Merged Rules: {len(merged_rules)}"
-    )
-
-    print(
-        f"📄 Combined Migration Documentation: "
-        f"{len(migration_doc_text)} characters"
-    )
+    print(f"\n✅ Rule Chain Composition Complete. Total Merged Rules: {len(merged_rules)}")
+    print(f"📄 Combined Migration Documentation: {len(migration_doc_text)} characters")
 
     return merged_rules, migration_doc_text, all_raw_example_blocks

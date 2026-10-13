@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {
+      "package": "openai",
+      "old_api": "httpx",
+      "new_api": "httpx2",
+      "requires_instantiation": null,
+      "migration_type": "client_migration",
+      "description": "HTTPX2 is now the default HTTP client, and httpx is no longer installed automatically.",
+      "example_before": null,
+      "example_after": null
+    }
+  ],
+  "raw_example_blocks": []
+}

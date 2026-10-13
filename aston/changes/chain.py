@@ -1,48 +1,38 @@
 """
-changes/chain.py
+Resolve migration boundaries and compose API rules across a version upgrade.
 
-Solves the gap: extracting rules for a single target_major_tag only
-catches breaking changes introduced in THAT release. If the installed
-code predates that tag by several major versions, or the latest release
-is several majors AHEAD of it, rules from every other major boundary in
-between are silently missing — which is exactly why real repos (further
-from 0.28.1 than the original single-step fixture) were failing.
-
-Two jobs:
-  1. get_migration_chain() — find every major-version-boundary release
-     between old_version and new_version, in order.
-  2. merge_rule_chain() — extract rules at each boundary, then COMPOSE
-     them: if v1 renames A->B and v2 later renames B->C, a piece of code
-     still calling A needs to end up mapped to C, not stuck at B.
+The chain includes:
+- the first stable tag for each crossed major version; and
+- the requested target tag, so changes introduced after the latest major boundary
+  are not silently missed.
 """
 
 import os
 import re
+from typing import Any
+
 import requests
-from packaging.version import Version, InvalidVersion
-from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
-from requests.exceptions import Timeout, ConnectionError
-from urllib3.exceptions import ProtocolError
+from packaging.version import InvalidVersion, Version
+from requests.exceptions import RequestException
 
 
-def _github_headers() -> dict:
-    """
-    Unauthenticated GitHub API calls are capped at 60/hour — easy to hit
-    once chain resolution + discover.py's link-following are both making
-    calls in the same run. Set GITHUB_TOKEN (a plain personal access
-    token, no special scopes needed for public repos) to raise that to
-    5000/hour. Falls back to unauthenticated if unset, same as before.
-    """
+GITHUB_API = "https://api.github.com"
+MAX_TAG_PAGES = 30
+REQUEST_TIMEOUT = 20
+
+
+def _github_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Aston-dependency-migration-tool",
+    }
     token = os.environ.get("GITHUB_TOKEN")
-    headers = {"Accept": "application/vnd.github+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
 
 
 def _parse_tag_version(tag_name: str) -> Version | None:
-    """GitHub tags are often 'v1.0.0', PyPI versions are '1.0.0' — strip
-    a leading 'v' before parsing so both compare correctly."""
     cleaned = re.sub(r"^[vV]", "", tag_name.strip())
     try:
         return Version(cleaned)
@@ -50,126 +40,151 @@ def _parse_tag_version(tag_name: str) -> Version | None:
         return None
 
 
-@retry(
-    wait=wait_random_exponential(min=5, max=30),
-    stop=stop_after_attempt(4),
-    retry=retry_if_exception_type((Timeout, ConnectionError, ProtocolError))
-)
-def _fetch_tag_page(session: requests.Session, repo: str, page: int) -> list:
-    """Fetches a single page of tags with retry protection."""
-    res = session.get(
-        f"https://api.github.com/repos/{repo}/tags",
-        params={"per_page": 100, "page": page},
-        timeout=30,
-    )
-    if res.status_code == 200:
-        return res.json()
-    return []
+def get_release_tags(repo: str) -> list[dict[str, Any]]:
+    """Return parseable tags. Raise on API/network failure instead of pretending
+    that an empty result means there are no version tags."""
+    tags: list[dict[str, Any]] = []
+    headers = _github_headers()
+
+    with requests.Session() as session:
+        for page in range(1, MAX_TAG_PAGES + 1):
+            response = session.get(
+                f"{GITHUB_API}/repos/{repo}/tags",
+                params={"per_page": 100, "page": page},
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            batch = response.json()
+            if not batch:
+                break
+
+            for item in batch:
+                name = item.get("name", "")
+                parsed = _parse_tag_version(name)
+                if parsed is not None:
+                    tags.append({"tag_name": name, "version": parsed})
+
+            if len(batch) < 100:
+                break
+
+    # Same version can occasionally have differently named tags. Keep one.
+    by_version: dict[Version, dict[str, Any]] = {}
+    for tag in tags:
+        existing = by_version.get(tag["version"])
+        if existing is None or (
+            existing["tag_name"].startswith("v") is False
+            and tag["tag_name"].startswith("v")
+        ):
+            by_version[tag["version"]] = tag
+
+    return sorted(by_version.values(), key=lambda item: item["version"])
 
 
-def get_release_tags(repo: str) -> list[dict]:
-    """
-    Fetches every git tag for `repo` (owner/name) via GitHub's /tags API,
-    parsed to (tag_name, Version). Skips tags that don't parse as a
-    version (e.g. codename tags) rather than crashing the whole chain.
+def get_migration_chain(
+    repo: str,
+    old_version: str,
+    new_version: str,
+) -> list[str]:
+    """Return stable major-boundary tags crossed plus the target tag.
 
-    BUGFIX: originally used the /releases endpoint, but that only returns
-    the newest ~N (paginated) releases — for a package with hundreds of
-    patch releases (openai-python has 300+), that never reaches back far
-    enough to find v1.0.0/v2.0.0 boundaries. /tags is lighter per-request
-    and reliably covers the FULL tag history with enough pagination.
-    """
-    tags = []
-    page = 1
-    while True:
-        res = requests.get(
-            f"https://api.github.com/repos/{repo}/tags",
-            params={"per_page": 100, "page": page},
-            headers=_github_headers(),
-            timeout=30,
-        )
-        if res.status_code != 200:
-            break
-        batch = res.json()
-        if not batch:
-            break
-        for tag in batch:
-            tag_name = tag.get("name", "")
-            version = _parse_tag_version(tag_name)
-            if version is not None:
-                tags.append({"tag_name": tag_name, "version": version})
-        page += 1
-        if page > 30:  # 3000 tags is plenty; stop paginating past that
-            break
-    return tags
-
-
-def get_migration_chain(repo: str, old_version: str, new_version: str) -> list[str]:
-    """
-    Returns the ordered list of GitHub release tags representing every
-    MAJOR-version boundary strictly after old_version and up to and
-    including new_version. Minor/patch releases are intentionally
-    skipped — per your own architecture doc, breaking changes worth a
-    migration rule almost always land on a major bump, and processing
-    every minor release would multiply LLM calls for little benefit.
-
-    Example: old=0.28.1, new=3.2.0, releases include v1.0.0, v1.4.0,
-    v2.0.0, v2.1.0, v3.0.0, v3.2.0 -> returns ["v1.0.0", "v2.0.0", "v3.0.0"]
+    Pre-release tags (alpha/beta/rc/dev) are excluded as migration boundaries.
+    If the target version is represented by a tag, use that exact tag spelling.
+    If it is not represented, append a conventional v-prefixed target tag; the
+    caller must treat missing documentation for that tag as unresolved.
     """
     try:
         old_v = Version(old_version)
-    except InvalidVersion:
-        old_v = Version("0")
-
-    try:
         new_v = Version(new_version)
-    except InvalidVersion:
+    except InvalidVersion as exc:
+        raise ValueError(
+            f"Invalid package version range: {old_version!r} -> {new_version!r}"
+        ) from exc
+
+    if new_v < old_v:
+        raise ValueError(
+            f"Target version {new_v} is older than installed version {old_v}"
+        )
+    if new_v == old_v:
         return []
 
-    all_tags = get_release_tags(repo)
-    in_range = [t for t in all_tags if old_v < t["version"] <= new_v]
-    in_range.sort(key=lambda t: t["version"])
+    tags = get_release_tags(repo)
+    stable = [
+        tag for tag in tags
+        if not tag["version"].is_prerelease
+        and not tag["version"].is_devrelease
+        and old_v < tag["version"] <= new_v
+    ]
+    stable.sort(key=lambda item: item["version"])
 
-    chain = []
-    last_major = old_v.major
-    for t in in_range:
-        if t["version"].major > last_major:
-            chain.append(t["tag_name"])
-            last_major = t["version"].major
+    chain: list[str] = []
+    crossed_majors: set[int] = set()
+    for tag in stable:
+        version = tag["version"]
+        if version.major > old_v.major and version.major not in crossed_majors:
+            chain.append(tag["tag_name"])
+            crossed_majors.add(version.major)
+
+    # Include target release to catch changes made after its major boundary.
+    exact_target = next(
+        (tag for tag in tags if tag["version"] == new_v),
+        None,
+    )
+    target_tag = exact_target["tag_name"] if exact_target else f"v{new_version}"
+    if target_tag not in chain:
+        chain.append(target_tag)
 
     return chain
 
 
 def merge_rule_chain(rulesets_in_order: list[list[dict]]) -> list[dict]:
+    """Compose A->B followed by B->C into A->C.
+
+    Rules are copied on input so this function does not mutate caller-owned
+    dictionaries. Examples are not composed as rules; their source/boundary
+    metadata should be retained separately for the patch-generation prompt.
+    """
     merged: dict[str, dict] = {}
 
     for ruleset in rulesets_in_order:
-        step_by_old = {r["old_api"]: r for r in ruleset}
-        consumed_this_step: set[str] = set()
+        step_by_old: dict[str, dict] = {}
+        for incoming in ruleset:
+            old_api = str(incoming.get("old_api", "")).strip()
+            new_api = str(incoming.get("new_api", "")).strip()
+            if old_api and new_api:
+                step_by_old[old_api] = dict(incoming)
 
-        for original_old_api, rule in merged.items():
-            current_new_api = rule["new_api"]
-            if current_new_api in step_by_old:
-                later_rule = step_by_old[current_new_api]
-                consumed_this_step.add(current_new_api)
-                rule["new_api"] = later_rule["new_api"]
-                rule["requires_instantiation"] = (
-                    later_rule.get("requires_instantiation") or rule.get("requires_instantiation")
-                )
-                # BUGFIX: migration_type and description describe the FINAL
-                # transformation's nature, same reasoning as new_api — a rule
-                # classified "rename" at v1 but reclassified "configuration"
-                # at v2 (this exact composition) needs the v2 classification,
-                # not the stale v1 one. Previously these two fields were never
-                # touched after first occurrence.
-                rule["migration_type"] = later_rule.get("migration_type") or rule.get("migration_type")
-                rule["description"] = later_rule.get("description") or rule.get("description")
-                if rule.get("example_before") is None:
-                    rule["example_before"] = later_rule.get("example_before")
-                rule["example_after"] = later_rule.get("example_after")
+        consumed: set[str] = set()
 
-        for old_api, rule in step_by_old.items():
-            if old_api not in merged and old_api not in consumed_this_step:
-                merged[old_api] = dict(rule)
+        # Compose all prior paths whose current destination is changed in this step.
+        for old_api, existing in list(merged.items()):
+            current_destination = existing.get("new_api")
+            later = step_by_old.get(current_destination)
+            if later is None:
+                continue
+
+            consumed.add(current_destination)
+            existing["new_api"] = later["new_api"]
+
+            for field in ("requires_instantiation", "migration_type", "description"):
+                if later.get(field) is not None:
+                    existing[field] = later[field]
+
+            # Preserve the earliest before-example; prefer the latest after-example.
+            if not existing.get("example_before") and later.get("example_before"):
+                existing["example_before"] = later["example_before"]
+            if later.get("example_after"):
+                existing["example_after"] = later["example_after"]
+
+        # Add rules that begin in this step. Intermediate APIs consumed above
+        # are not emitted as separate starting points unless they are truly new.
+        for old_api, incoming in step_by_old.items():
+            if old_api in consumed:
+                continue
+            if old_api not in merged:
+                merged[old_api] = dict(incoming)
+
+        # If a rule already exists for the same old API, the earliest starting
+        # point remains authoritative; its destination was composed above if needed.
 
     return list(merged.values())

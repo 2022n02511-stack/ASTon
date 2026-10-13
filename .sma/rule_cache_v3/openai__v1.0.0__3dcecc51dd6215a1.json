@@ -1,0 +1,545 @@
+{
+  "rules": [
+    {
+      "package": "openai",
+      "old_api": "openai.api_base",
+      "new_api": "openai.base_url",
+      "requires_instantiation": null,
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.proxy",
+      "new_api": "openai.proxies",
+      "requires_instantiation": null,
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.InvalidRequestError",
+      "new_api": "openai.BadRequestError",
+      "requires_instantiation": null,
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Audio.transcribe",
+      "new_api": "client.audio.transcriptions.create",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Audio.translate",
+      "new_api": "client.audio.translations.create",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.ChatCompletion.create",
+      "new_api": "client.chat.completions.create",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Completion.create",
+      "new_api": "client.completions.create",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Edit.create",
+      "new_api": "client.edits.create",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Embedding.create",
+      "new_api": "client.embeddings.create",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.File.create",
+      "new_api": "client.files.create",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.File.list",
+      "new_api": "client.files.list",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.File.retrieve",
+      "new_api": "client.files.retrieve",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.File.download",
+      "new_api": "client.files.retrieve_content",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.cancel",
+      "new_api": "client.fine_tunes.cancel",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.list",
+      "new_api": "client.fine_tunes.list",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.list_events",
+      "new_api": "client.fine_tunes.list_events",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.stream_events",
+      "new_api": "client.fine_tunes.list_events(stream=True)",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.retrieve",
+      "new_api": "client.fine_tunes.retrieve",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.delete",
+      "new_api": "client.fine_tunes.delete",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTune.create",
+      "new_api": "client.fine_tunes.create",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.create",
+      "new_api": "client.fine_tuning.jobs.create",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.cancel",
+      "new_api": "client.fine_tuning.jobs.cancel",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.delete",
+      "new_api": "client.fine_tuning.jobs.create",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.retrieve",
+      "new_api": "client.fine_tuning.jobs.retrieve",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.list",
+      "new_api": "client.fine_tuning.jobs.list",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.FineTuningJob.list_events",
+      "new_api": "client.fine_tuning.jobs.list_events",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Image.create",
+      "new_api": "client.images.generate",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Image.create_variation",
+      "new_api": "client.images.create_variation",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Image.create_edit",
+      "new_api": "client.images.edit",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Model.list",
+      "new_api": "client.models.list",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Model.delete",
+      "new_api": "client.models.delete",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Model.retrieve",
+      "new_api": "client.models.retrieve",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Moderation.create",
+      "new_api": "client.moderations.create",
+      "requires_instantiation": "Instantiate a client",
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.api_resources",
+      "new_api": "openai.resources",
+      "requires_instantiation": null,
+      "migration_type": "rename",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.api_key_path",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.app_info",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.debug",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.log",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.OpenAIError",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Audio.transcribe_raw",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Audio.translate_raw",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.ErrorObject",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Customer",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.api_version",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.verify_ssl_certs",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.api_type",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.enable_telemetry",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.ca_bundle_path",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.requestssession",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.aiosession",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Deployment",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Engine",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.File.find_matching_files",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.embeddings_utils",
+      "new_api": "UNRESOLVED: no documented replacement",
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": null,
+      "example_before": null,
+      "example_after": null
+    }
+  ],
+  "raw_example_blocks": []
+}
