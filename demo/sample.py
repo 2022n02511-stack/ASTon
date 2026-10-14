@@ -5,7 +5,7 @@ import requests
 # 1. Non-call property and error references
 api_key = openai.api_key
 base_url = openai.api_base
-# proxy_setting = openai.proxy
+proxy_setting = openai.proxy
 
 # 2. Legacy OpenAI call (v0.28.1 style)
 response = openai.ChatCompletion.create(

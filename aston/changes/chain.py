@@ -141,8 +141,7 @@ def merge_rule_chain(rulesets_in_order: list[list[dict]]) -> list[dict]:
     """Compose A->B followed by B->C into A->C.
 
     Rules are copied on input so this function does not mutate caller-owned
-    dictionaries. Examples are not composed as rules; their source/boundary
-    metadata should be retained separately for the patch-generation prompt.
+    dictionaries. Carries forward version bounds (from_version, target_version).
     """
     merged: dict[str, dict] = {}
 
@@ -166,9 +165,14 @@ def merge_rule_chain(rulesets_in_order: list[list[dict]]) -> list[dict]:
             consumed.add(current_destination)
             existing["new_api"] = later["new_api"]
 
-            for field in ("requires_instantiation", "migration_type", "description"):
+            # Update fields, ensuring target_version takes the latest boundary
+            for field in ("requires_instantiation", "migration_type", "description", "target_version"):
                 if later.get(field) is not None:
                     existing[field] = later[field]
+
+            # Preserve earliest from_version, latest target_version
+            if later.get("from_version") and not existing.get("from_version"):
+                existing["from_version"] = later["from_version"]
 
             # Preserve the earliest before-example; prefer the latest after-example.
             if not existing.get("example_before") and later.get("example_before"):
@@ -176,15 +180,11 @@ def merge_rule_chain(rulesets_in_order: list[list[dict]]) -> list[dict]:
             if later.get("example_after"):
                 existing["example_after"] = later["example_after"]
 
-        # Add rules that begin in this step. Intermediate APIs consumed above
-        # are not emitted as separate starting points unless they are truly new.
+        # Add rules that begin in this step.
         for old_api, incoming in step_by_old.items():
             if old_api in consumed:
                 continue
             if old_api not in merged:
                 merged[old_api] = dict(incoming)
-
-        # If a rule already exists for the same old API, the earliest starting
-        # point remains authoritative; its destination was composed above if needed.
 
     return list(merged.values())

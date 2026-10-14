@@ -41,6 +41,8 @@ class MigrationRule(BaseModel):
     requires_instantiation: bool | None = None
     migration_type: str | None = None
     description: str | None = None
+    from_version: str 
+    to_version: str
     example_before: str | None = None
     example_after: str | None = None
     # Added by the validation pass below — None for rules that, for any
@@ -88,6 +90,20 @@ If no such examples are present, return [].
 Output only data matching the response schema.
 """
 
+RENAME_CONTRADICTION_SIGNALS = (
+    "via", "through", "align", "pass to", "passed to", "configure",
+    "instantiat", "client", "constructor", "parameter of", "http client",
+)
+
+def check_rename_contradiction(rule: dict) -> bool:
+    """Returns True if migration_type=='rename' but the description
+    describes something structural — a deterministic backstop for the
+    exact case that slipped through: 'renamed to align with the
+    underlying HTTP client's proxy settings' classified as 'rename'."""
+    if rule.get("migration_type") != "rename":
+        return False
+    description = (rule.get("description") or "").lower()
+    return any(signal in description for signal in RENAME_CONTRADICTION_SIGNALS)
 
 # --- Validation pass -------------------------------------------------------
 # Every rule extract_rules() produces is a CLAIM about the documentation.
@@ -102,6 +118,8 @@ class ValidatedRule(BaseModel):
     migration_type: str
     requires_instantiation: bool | None = None
     description: str
+    from_version: str 
+    to_version: str
     evidence: str | None = None
     source_url: str | None = None
     validation_status: str  # "validated" | "needs_review" | "rejected"
@@ -127,25 +145,45 @@ Rules:
 2. Do not invent APIs, source URLs, quotations, or evidence.
 3. Classify each rule as exactly one of: rename, structural, initialization,
    configuration, removal, manual.
-4. Definitions:
-   - rename: a direct symbol replacement where nothing else changes.
-   - configuration: global module settings that must now be passed as client
-     parameters or instance attributes (e.g. a module-level proxy setting
-     that must move into the client's http_client configuration).
+4. Definitions — read carefully, these are NOT interchangeable:
+   - rename: the OLD symbol and NEW symbol are used IDENTICALLY in every other
+     respect — same calling convention, same surrounding code, nothing else
+     changes. If your description would need to mention a client, a
+     constructor, "passing via", "aligning with", "configuring through", or
+     any other object that isn't the symbol itself, THIS IS NOT A RENAME.
+   - configuration: a module-level setting or attribute that must now be
+     supplied through a client constructor, an instance attribute, or some
+     other structural location instead of a flat symbol swap.
    - initialization / client_migration: requires instantiating a client
-     object first.
-5. Set requires_instantiation to true, false, or null.
-6. Provide an actionable description explaining WHY it's a configuration or
+     object first, and the call moves onto that object.
+5. SELF-CONSISTENCY CHECK (perform this for every rule before finalizing it):
+   Re-read your own migration_type and description together. Do they agree?
+   If description contains any of: "via", "through", "align", "pass to",
+   "configure", "instantiate", "client", "constructor", "parameter of" —
+   migration_type MUST NOT be "rename". If you find a contradiction, do not
+   silently pick one — set validation_status to "needs_review" instead, since
+   a self-contradictory rule is not safe to act on automatically.
+6. Set requires_instantiation to true, false, or null.
+7. Provide an actionable description explaining WHY it's a configuration or
    structural change, if it is one.
-7. Preserve the original API and source evidence where possible.
-8. Set validation_status to exactly one of: validated, needs_review, rejected.
-9. A rule may be validated only when the supplied evidence supports the
-   migration. "evidence" must be an exact excerpt that appears verbatim in
-   the supplied source documentation — not a paraphrase, not a summary.
-10. If evidence is insufficient, use needs_review.
-11. If the old API was removed without a confirmed replacement, do not invent
-    new_api. Use null.
-12. Keep every input rule in the output for auditability.
+8. Preserve the original API and source evidence where possible.
+9. Set validation_status to exactly one of: validated, needs_review, rejected.
+10. A rule may be validated only when the supplied evidence supports the
+    migration. "evidence" must be an exact excerpt that appears verbatim in
+    the supplied source documentation — not a paraphrase, not a summary.
+11. AUTHORITATIVENESS CHECK: verbatim presence in the source text is NOT
+    sufficient on its own. Discussion threads and issue comments often
+    contain other users' QUESTIONS, GUESSES, or SPECULATION, not confirmed
+    answers. If the evidence excerpt is phrased as a question ("does X
+    become Y?", "is it now...?"), hedged ("I think", "maybe", "possibly",
+    "not sure if"), or attributed to a reply rather than the original
+    maintainer post, set validation_status to "needs_review" — do not treat
+    a speculative comment as a confirmed migration instruction.
+12. If evidence is insufficient or the rule is self-contradictory, use
+    needs_review.
+13. If the old API was removed without a confirmed replacement, do not
+    invent new_api. Use null.
+14. Keep every input rule in the output for auditability.
 """
 
 
@@ -216,6 +254,12 @@ Preserve original evidence and source URLs. Do not invent either.
         rejected = 0
 
         for rule in parsed.rules:
+            if check_rename_contradiction(rule.model_dump()):
+                print(f"⚠️ Contradiction: '{rule.old_api}' classified as rename but "
+                    f"description implies structural change — downgrading to needs_review")
+                needs_review += 1
+                continue
+
             if rule.validation_status == "rejected":
                 rejected += 1
                 continue
@@ -252,6 +296,8 @@ Preserve original evidence and source URLs. Do not invent either.
                 "migration_type": rule.migration_type,
                 "requires_instantiation": rule.requires_instantiation,
                 "description": rule.description.strip() if rule.description else None,
+                "from_version": rule.from_version,
+                "to_version": rule.to_version,
                 "evidence": rule.evidence,
                 "source_url": rule.source_url,
                 "validation_status": "validated",

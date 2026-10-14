@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from mistralai.client import Mistral
-
+from aston.rule_validation import validate_rules_against_target
 from aston.scanner import parser
 from aston.ingestion import run_stage1_pipeline, get_latest_pypi_version
 from aston.relevance import evaluate_relevance_and_completeness, canonicalize_usage
@@ -245,15 +245,19 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
 
     relevant_rules = audit["relevant_records"]
 
+    another_rules = relevant_rules
+
+    validated_rules = validate_rules_against_target(another_rules)
+
     with open("changes.json", "w") as f:
-        json.dump(relevant_rules, f, indent=2)
+        json.dump(validated_rules, f, indent=2)
     print("📁 Canonical contract saved to changes.json")
 
     print("\n==================================================")
     print("--- [Stage 3] Matching Usages & Patching Code ---")
     print("==================================================")
-    report = man_extract(relevant_rules, parses)
+    report = man_extract(validated_rules, parses)
 
-    print(report, relevant_rules, raw_code_examples)
+    print(report, validated_rules, raw_code_examples)
 
-    return report, relevant_rules, raw_code_examples, doc_text, is_genuinely_complete
+    return report, validated_rules, raw_code_examples, doc_text, is_genuinely_complete
