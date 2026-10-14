@@ -1,3 +1,11 @@
+"""
+Discovers migration documentation and extracts structured migration rules,
+validated against the actual source evidence before being trusted anywhere
+downstream. The validator was previously written but never called — this
+was the direct cause of ungrounded rules (e.g. openai.proxy -> openai.proxies,
+an attribute that never existed) reaching the patcher unchecked.
+"""
+
 import base64
 import hashlib
 import json
@@ -23,7 +31,7 @@ client = Mistral(api_key=API_KEY) if API_KEY else None
 
 GITHUB_API = "https://api.github.com"
 REQUEST_TIMEOUT = 20
-CACHE_DIR = Path(".sma/rule_cache_v3")
+CACHE_DIR = Path(".sma/rule_cache_v4")
 
 
 class MigrationRule(BaseModel):
@@ -35,6 +43,11 @@ class MigrationRule(BaseModel):
     description: str | None = None
     example_before: str | None = None
     example_after: str | None = None
+    # Added by the validation pass below — None for rules that, for any
+    # reason, bypass validation (should not happen in normal operation).
+    evidence: str | None = None
+    source_url: str | None = None
+    validation_status: str | None = None
 
 
 class MigrationRuleset(BaseModel):
@@ -56,10 +69,15 @@ For every rule:
 - old_api: the old fully qualified API symbol, when the source supports it.
 - new_api: the documented replacement. For removals without a replacement,
   use the exact string "UNRESOLVED: no documented replacement".
-- requires_instantiation: explain the required client setup briefly, or null.
+- requires_instantiation: a BOOLEAN. true if using the new API requires
+  instantiating a client object first, false otherwise. Do NOT put an
+  explanation here — put the "how to instantiate" details in description.
 - migration_type: one of rename, configuration, client_migration,
   signature_change, removal, or unknown.
-- description: short explanation of any non-trivial transformation, or null.
+- description: short explanation of any non-trivial transformation. If
+  requires_instantiation is true, explain HOW to instantiate the client here
+  (e.g. "Instantiate OpenAI() and call the method on the instance"). Null if
+  the change is a trivial rename with nothing else to explain.
 - example_before / example_after: only minimal snippets explicitly shown in
   the source for this specific rule. Otherwise null.
 
@@ -71,6 +89,190 @@ Output only data matching the response schema.
 """
 
 
+# --- Validation pass -------------------------------------------------------
+# Every rule extract_rules() produces is a CLAIM about the documentation.
+# This checks that claim before anything downstream trusts it: a rule is only
+# kept if the model can point to an exact, verifiable excerpt of the real
+# source text supporting it. A rule whose "evidence" doesn't literally appear
+# in the source it was supposedly drawn from is dropped, not patched around.
+
+class ValidatedRule(BaseModel):
+    old_api: str
+    new_api: str | None = None
+    migration_type: str
+    requires_instantiation: bool | None = None
+    description: str
+    evidence: str | None = None
+    source_url: str | None = None
+    validation_status: str  # "validated" | "needs_review" | "rejected"
+
+
+class ValidatedRuleset(BaseModel):
+    rules: list[ValidatedRule] = Field(default_factory=list)
+
+
+ALLOWED_MIGRATION_TYPES = {
+    "rename", "structural", "initialization", "configuration", "removal", "manual",
+}
+ALLOWED_VALIDATION_STATUSES = {"validated", "needs_review", "rejected"}
+
+VALIDATOR_SYSTEM_PROMPT = """
+You are a Python dependency migration rule validator.
+
+Validate and normalize every candidate migration rule using the provided
+source migration documentation and original extracted data.
+
+Rules:
+1. Never assume an API replacement is valid because its name looks plausible.
+2. Do not invent APIs, source URLs, quotations, or evidence.
+3. Classify each rule as exactly one of: rename, structural, initialization,
+   configuration, removal, manual.
+4. Definitions:
+   - rename: a direct symbol replacement where nothing else changes.
+   - configuration: global module settings that must now be passed as client
+     parameters or instance attributes (e.g. a module-level proxy setting
+     that must move into the client's http_client configuration).
+   - initialization / client_migration: requires instantiating a client
+     object first.
+5. Set requires_instantiation to true, false, or null.
+6. Provide an actionable description explaining WHY it's a configuration or
+   structural change, if it is one.
+7. Preserve the original API and source evidence where possible.
+8. Set validation_status to exactly one of: validated, needs_review, rejected.
+9. A rule may be validated only when the supplied evidence supports the
+   migration. "evidence" must be an exact excerpt that appears verbatim in
+   the supplied source documentation — not a paraphrase, not a summary.
+10. If evidence is insufficient, use needs_review.
+11. If the old API was removed without a confirmed replacement, do not invent
+    new_api. Use null.
+12. Keep every input rule in the output for auditability.
+"""
+
+
+def normalize_evidence_text(text: str) -> str:
+    """Normalize whitespace and common Markdown formatting for comparison."""
+    if not isinstance(text, str):
+        return ""
+    text = text.replace("\\", "")
+    text = re.sub(r"`+", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip().casefold()
+
+
+def validate_and_normalize_rules(
+    package: str,
+    current_version: str,
+    target_version: str,
+    rules: list[dict],
+    raw_code_examples: list[str],
+    source_evidence: str = "",
+) -> list[dict]:
+    """
+    Validate and normalize extracted migration rules. Only rules with
+    validated status, a concrete migration, and supporting evidence that is
+    actually present in source_evidence are returned.
+    """
+    if not rules:
+        print("⚠️ Rule validation skipped: no extracted rules.")
+        return []
+    if not client:
+        raise RuntimeError("MISTRAL_API_KEY is not set; cannot validate migration rules.")
+
+    user_prompt = f"""
+PACKAGE: {package}
+CURRENT VERSION: {current_version}
+TARGET VERSION: {target_version}
+
+ORIGINAL EXTRACTED RULES:
+{json.dumps(rules, indent=2, default=str)}
+
+RAW CODE EXAMPLES (usage context only):
+{json.dumps(raw_code_examples or [], indent=2, default=str)}
+
+SOURCE MIGRATION DOCUMENTATION:
+{source_evidence or "No source documentation supplied."}
+
+Validate every rule against the available source evidence.
+Preserve original evidence and source URLs. Do not invent either.
+"""
+
+    try:
+        response = client.chat.parse(
+            model="codestral-latest",
+            messages=[
+                {"role": "system", "content": VALIDATOR_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format=ValidatedRuleset,
+            temperature=0,
+        )
+        parsed = response.choices[0].message.parsed
+        if parsed is None:
+            print("❌ Rule validation returned no parsed result.")
+            return []
+
+        accepted = []
+        needs_review = 0
+        rejected = 0
+
+        for rule in parsed.rules:
+            if rule.validation_status == "rejected":
+                rejected += 1
+                continue
+            if rule.validation_status == "needs_review":
+                needs_review += 1
+                continue
+            if rule.migration_type in {"removal", "manual"}:
+                needs_review += 1
+                continue
+            if not rule.new_api or not rule.new_api.strip():
+                needs_review += 1
+                continue
+
+            # The check that actually matters: does the claimed evidence
+            # literally appear in the real source text, or is it invented?
+            normalized_evidence = normalize_evidence_text(rule.evidence or "")
+            normalized_source = normalize_evidence_text(source_evidence)
+            evidence_is_grounded = bool(
+                normalized_evidence
+                and normalized_source
+                and normalized_evidence in normalized_source
+            )
+
+            if not evidence_is_grounded:
+                print(f"⚠️ Evidence mismatch, dropping rule: {rule.old_api} -> {rule.new_api}")
+                print(f"   Evidence claimed: {rule.evidence!r}")
+                needs_review += 1
+                continue
+
+            accepted.append({
+                "package": package,
+                "old_api": rule.old_api.strip(),
+                "new_api": rule.new_api.strip(),
+                "migration_type": rule.migration_type,
+                "requires_instantiation": rule.requires_instantiation,
+                "description": rule.description.strip() if rule.description else None,
+                "evidence": rule.evidence,
+                "source_url": rule.source_url,
+                "validation_status": "validated",
+            })
+
+        print("\n========== Rule Validation Summary ==========")
+        print(f"Candidate rules: {len(rules)}")
+        print(f"Validated and accepted: {len(accepted)}")
+        print(f"Needs review / insufficient evidence: {needs_review}")
+        print(f"Rejected: {rejected}")
+        print("==============================================\n")
+
+        return accepted
+
+    except Exception as exc:
+        print(f"❌ Rule validation failed: {exc}")
+        return []
+
+
+# --- Extraction (unvalidated) -----------------------------------------------
+
 def _github_headers() -> dict[str, str]:
     headers = {
         "Accept": "application/vnd.github+json",
@@ -80,17 +282,12 @@ def _github_headers() -> dict[str, str]:
         headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
     return headers
 
+EXTRACTION_SCHEMA_VERSION = "v2-validated"
 
-def _cache_path(
-    package: str,
-    tag: str,
-    doc_text: str,
-    stage0_symbols: set[str],
-) -> Path:
-    """Cache by source text and scanner-symbol set so stale/empty cache entries
-    do not survive changes to the documentation or the relevant usages."""
+def _cache_path(package: str, tag: str, doc_text: str, stage0_symbols: set[str]) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     digest_input = (
+        EXTRACTION_SCHEMA_VERSION + "\n" +
         doc_text + "\n--SYMBOLS--\n" + "\n".join(sorted(stage0_symbols))
     ).encode("utf-8", errors="replace")
     digest = hashlib.sha256(digest_input).hexdigest()[:16]
@@ -103,15 +300,11 @@ def should_extract(doc_text: str, stage0_symbols: set[str]) -> bool:
     """Cheap gate only; this does not claim to prove all usages are covered."""
     if not stage0_symbols:
         return True
-
     doc_lower = doc_text.lower()
     for symbol in stage0_symbols:
         normalized = symbol.strip().lower()
         if normalized and normalized in doc_lower:
             return True
-
-        # A final-name fallback helps docs that omit the package prefix, but
-        # avoid very generic identifiers that cause needless extraction calls.
         leaf = normalized.rsplit(".", 1)[-1]
         generic_names = {
             "create", "client", "open", "close", "get", "set", "update",
@@ -123,7 +316,6 @@ def should_extract(doc_text: str, stage0_symbols: set[str]) -> bool:
             and re.search(rf"(?<![a-z0-9_]){re.escape(leaf)}(?![a-z0-9_])", doc_lower)
         ):
             return True
-
     return False
 
 
@@ -140,15 +332,58 @@ def normalize_rule_symbols(rules: list[dict]) -> list[dict]:
 
 
 def _validate_raw_blocks(blocks: list[str], source_text: str) -> list[str]:
-    """Only retain exact snippets present in the source passed to the model."""
+    normalized_source = re.sub(r"\s+", " ", source_text).casefold()
     result = []
     seen = set()
     for block in blocks:
         cleaned = block.strip()
-        if cleaned and cleaned in source_text and cleaned not in seen:
+        normalized_block = re.sub(r"\s+", " ", cleaned).casefold()
+        if cleaned and normalized_block in normalized_source and cleaned not in seen:
             result.append(cleaned)
             seen.add(cleaned)
     return result
+
+
+def extract_rules(package: str, doc_text: str) -> MigrationRuleset:
+    """Raw extraction only — NOT validated yet. extract_rules_cached() below
+    is the function that should be called from the pipeline; it runs this,
+    then validate_and_normalize_rules(), before caching and returning."""
+    if not client:
+        raise RuntimeError("MISTRAL_API_KEY is not set; cannot extract migration rules.")
+    if not doc_text or len(doc_text.strip()) < 30:
+        return MigrationRuleset()
+
+    truncated_text = doc_text[:20000]
+    response = client.chat.parse(
+        model="codestral-latest",
+        messages=[
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"Package name: {package}\n"
+                    "Extract rules only from the documentation below.\n\n"
+                    f"Documentation:\n{truncated_text}"
+                ),
+            },
+        ],
+        response_format=MigrationRuleset,
+        temperature=0,
+    )
+
+    parsed = response.choices[0].message.parsed
+    if parsed is None:
+        raise RuntimeError(f"Codestral returned no parsed ruleset for {package}")
+
+    normalized = normalize_rule_symbols([rule.model_dump() for rule in parsed.rules])
+    for rule in normalized:
+        rule["package"] = package
+
+    blocks = _validate_raw_blocks(parsed.raw_example_blocks, truncated_text)
+    return MigrationRuleset(
+        rules=[MigrationRule.model_validate(rule) for rule in normalized],
+        raw_example_blocks=blocks,
+    )
 
 
 def extract_rules_cached(
@@ -156,7 +391,15 @@ def extract_rules_cached(
     tag: str,
     doc_text: str,
     stage0_symbols: set[str],
+    current_version: str,
+    target_version: str,
 ) -> MigrationRuleset:
+    """
+    Extract, THEN VALIDATE, then cache the validated result. Previously this
+    only cached the raw extraction and validation was never called at all —
+    this was the direct path by which an ungrounded rule like
+    openai.proxy -> openai.proxies reached the patcher unchecked.
+    """
     cache_file = _cache_path(package, tag, doc_text, stage0_symbols)
 
     if cache_file.exists():
@@ -171,7 +414,24 @@ def extract_rules_cached(
         cache_file.write_text(result.model_dump_json(indent=2))
         return result
 
-    result = extract_rules(package, doc_text)
+    raw = extract_rules(package, doc_text)
+    if not raw.rules:
+        cache_file.write_text(raw.model_dump_json(indent=2))
+        return raw
+
+    validated_dicts = validate_and_normalize_rules(
+        package=package,
+        current_version=current_version,
+        target_version=target_version,
+        rules=[r.model_dump() for r in raw.rules],
+        raw_code_examples=raw.raw_example_blocks,
+        source_evidence=doc_text,
+    )
+
+    result = MigrationRuleset(
+        rules=[MigrationRule.model_validate(r) for r in validated_dicts],
+        raw_example_blocks=raw.raw_example_blocks,
+    )
     cache_file.write_text(result.model_dump_json(indent=2))
     return result
 
@@ -200,7 +460,6 @@ def resolve_github_repo(package_name: str) -> Optional[str]:
     )
     if response.status_code != 200:
         return None
-
     project_urls = response.json().get("info", {}).get("project_urls") or {}
     for target_url in project_urls.values():
         match = re.search(r"github\.com/([^/]+/[^/]+)", target_url)
@@ -252,7 +511,6 @@ def fetch_page_content(url: str) -> str | None:
         if response.status_code != 200:
             return None
 
-        # This is a lightweight HTML fallback, not a full Markdown/HTML parser.
         text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", response.text)
         text = re.sub(r"(?i)<br\s*/?>|</(p|div|li|pre|h[1-6])>", "\n", text)
         text = re.sub(r"<[^>]+>", " ", text)
@@ -306,7 +564,6 @@ def _fetch_repo_file(repo: str, tag: str, filename: str) -> str | None:
         except (ValueError, TypeError):
             return None
 
-    # Contents API may provide a download URL for larger files.
     download_url = data.get("download_url")
     if download_url:
         raw = requests.get(download_url, timeout=REQUEST_TIMEOUT)
@@ -332,14 +589,8 @@ def discover_release_doc(repo: str, tag: str) -> str | None:
     if not body or len(body.strip()) < 20:
         print(f"  ⚠️ No useful release notes for {tag}; checking repository files.")
         candidates = (
-            "MIGRATION.md",
-            "migration.md",
-            "CHANGELOG.md",
-            "CHANGELOG.rst",
-            "CHANGES.md",
-            "docs/migration.md",
-            "docs/MIGRATION.md",
-            "docs/CHANGELOG.md",
+            "MIGRATION.md", "migration.md", "CHANGELOG.md", "CHANGELOG.rst",
+            "CHANGES.md", "docs/migration.md", "docs/MIGRATION.md", "docs/CHANGELOG.md",
         )
         found = []
         for filename in candidates:
@@ -361,59 +612,15 @@ def discover_release_doc(repo: str, tag: str) -> str | None:
     return "\n\n--- NEXT DOCUMENT IN CHAIN ---\n\n".join(linked_docs)[:30000]
 
 
-def extract_rules(package: str, doc_text: str) -> MigrationRuleset:
-    if not client:
-        raise RuntimeError("MISTRAL_API_KEY is not set; cannot extract migration rules.")
-    if not doc_text or len(doc_text.strip()) < 30:
-        return MigrationRuleset()
-
-    # Keep a hard limit because providers enforce request/token limits.
-    truncated_text = doc_text[:20000]
-    response = client.chat.parse(
-        model="codestral-latest",
-        messages=[
-            {"role": "system", "content": prompt},
-            {
-                "role": "user",
-                "content": (
-                    f"Package name: {package}\n"
-                    "Extract rules only from the documentation below.\n\n"
-                    f"Documentation:\n{truncated_text}"
-                ),
-            },
-        ],
-        response_format=MigrationRuleset,
-        temperature=0,
-    )
-
-    parsed = response.choices[0].message.parsed
-
-    # print(parsed)
-    if parsed is None:
-        raise RuntimeError(f"Codestral returned no parsed ruleset for {package}")
-
-    normalized = normalize_rule_symbols([rule.model_dump() for rule in parsed.rules])
-    # print(normalized)
-    for rule in normalized:
-        # The package is known by the caller; do not trust a model-generated value.
-        rule["package"] = package
-
-    
-
-    blocks = _validate_raw_blocks(parsed.raw_example_blocks, truncated_text)
-    return MigrationRuleset(
-        rules=[MigrationRule.model_validate(rule) for rule in normalized],
-        raw_example_blocks=blocks,
-    )
-
-
 def run_stage1_pipeline(
     package_name: str,
     current_version: str | None = None,
     target_version: str | None = None,
     stage0_symbols: set[str] | None = None,
 ) -> tuple[list[dict], str, list[dict]]:
-    """Return (merged_rules, combined_docs, boundary-tagged raw examples)."""
+    """Return (merged_rules, combined_docs, boundary-tagged raw examples).
+    Rules in merged_rules have already passed validate_and_normalize_rules()
+    at each boundary — nothing ungrounded reaches the caller."""
     if not current_version or not target_version:
         raise ValueError("current_version and target_version are required for migration-chain resolution.")
 
@@ -458,6 +665,8 @@ def run_stage1_pipeline(
             tag,
             doc_content,
             stage0_symbols or set(),
+            current_version,
+            target_version,
         )
         rulesets_in_order.append([rule.model_dump() for rule in ruleset.rules])
 
@@ -468,13 +677,10 @@ def run_stage1_pipeline(
                 "code": block,
             })
 
-        print(f"  └─ Processed {len(ruleset.rules)} rules for {tag}")
+        print(f"  └─ Processed {len(ruleset.rules)} VALIDATED rules for {tag}")
 
     if unresolved_boundaries:
-        print(
-            "⚠️ Unresolved documentation boundaries: "
-            + ", ".join(unresolved_boundaries)
-        )
+        print("⚠️ Unresolved documentation boundaries: " + ", ".join(unresolved_boundaries))
         print("⚠️ Coverage is incomplete until these boundaries have usable sources.")
 
     merged_rules = merge_rule_chain(rulesets_in_order)
@@ -482,8 +688,5 @@ def run_stage1_pipeline(
 
     print(f"\n✅ Rule Chain Composition Complete. Total Merged Rules: {len(merged_rules)}")
     print(f"📄 Combined Migration Documentation: {len(migration_doc_text)} characters")
-
-    # print(merged_rules)
-    # print(migration_doc_text)
 
     return merged_rules, migration_doc_text, all_raw_example_blocks
