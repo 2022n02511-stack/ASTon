@@ -18,292 +18,301 @@ API_KEY = os.environ.get("MISTRAL_API_KEY")
 client = Mistral(api_key=API_KEY)
 # client = genai.Client(api_key=API_KEY)
 
+def normalize_evidence_text(text: str) -> str:
+    """Normalize whitespace and common Markdown formatting for comparison."""
+    if not isinstance(text, str):
+        return ""
 
-import re
-import json
+    text = text.replace("\\", "")
+    text = re.sub(r"`+", "", text)
+    text = re.sub(r"\s+", " ", text)
 
-
-ALLOWED_MIGRATION_TYPES = {
-    "rename",
-    "structural",
-    "initialization",
-    "configuration",
-    "removal",
-    "manual",
-}
-
-ALLOWED_VALIDATION_STATUSES = {
-    "validated",
-    "needs_review",
-    "rejected",
-}
+    return text.strip().casefold()
 
 
-def validate_and_normalize_rules(
-    package: str,
-    current_version: str,
-    target_version: str,
-    rules: list,
-    raw_code_examples: list[str],
-) -> list[dict]:
-    """
-    Validate extracted migration rules using Codestral.
 
-    Returns only rules with validation_status == "validated".
-    Uncertain, rejected, or malformed rules are excluded so they
-    cannot reach the automatic patching stage.
-
-    Each accepted rule contains:
-        old_api
-        new_api
-        type
-        requires_instantiation
-        description
-        evidence
-        validation_status
-    """
-
-    if not rules:
-        print("⚠️ Rule validation skipped: no extracted rules.")
-        return []
-
-    # Preserve the original extraction output as validation context.
-    rules_json = json.dumps(rules, indent=2, default=str)
-    examples_json = json.dumps(
-        raw_code_examples or [],
-        indent=2,
-        default=str,
+def contains_items(items):
+    """Return True when items is a non-empty list of dictionaries."""
+    return (
+        isinstance(items, list)
+        and len(items) > 0
+        and any(isinstance(item, dict) for item in items)
     )
 
-    system_prompt = """
-You are a Python dependency migration rule validator.
 
-Your task is to validate and normalize candidate migration rules.
-Do not generate or modify application source code.
+# ALLOWED_MIGRATION_TYPES = {
+#     "rename",
+#     "structural",
+#     "initialization",
+#     "configuration",
+#     "removal",
+#     "manual",
+# }
 
-For every candidate rule:
+# ALLOWED_VALIDATION_STATUSES = {
+#     "validated",
+#     "needs_review",
+#     "rejected",
+# }
 
-1. Check whether old_api and new_api accurately represent the
-   migration described by the supplied information.
 
-2. Do not assume a replacement is valid because its name looks
-   plausible. For example, do not infer that an attribute named
-   "proxy" became "proxies" without supporting evidence.
 
-3. Preserve the distinction between a direct rename and a structural
-   migration. If a client object must be created, configured, or
-   substituted for a module-level API, classify the rule accordingly.
+# def validate_and_normalize_rules(
+#     package: str,
+#     current_version: str,
+#     target_version: str,
+#     rules: list,
+#     raw_code_examples: list[str],
+#     source_evidence: str = "",
+# ) -> list[dict]:
+#     """
+#     Validate and normalize extracted migration rules.
 
-4. Use exactly one of these types:
-   - rename
-   - structural
-   - initialization
-   - configuration
-   - removal
-   - manual
+#     Only rules with validated status, a concrete migration, and
+#     supporting evidence from the supplied input are returned.
+#     """
 
-5. Set requires_instantiation to:
-   - true if the migration requires constructing a client or object
-   - false if it does not
-   - null if this cannot be determined
+#     if not rules:
+#         print("⚠️ Rule validation skipped: no extracted rules.")
+#         return []
 
-6. Write a concise, actionable description explaining what changes
-   and any relevant prerequisites.
+#     allowed_types = {
+#         "rename",
+#         "structural",
+#         "initialization",
+#         "configuration",
+#         "removal",
+#         "manual",
+#     }
 
-7. Preserve source evidence and references provided in the input.
-   Do not fabricate quotations, URLs, documentation, or evidence.
-   Code examples show how APIs are used; they do not, by themselves,
-   prove that a migration is valid.
+#     allowed_statuses = {
+#         "validated",
+#         "needs_review",
+#         "rejected",
+#     }
 
-8. Set validation_status to exactly one of:
-   - validated: the proposed migration is supported by the supplied
-     evidence and its instructions are sufficiently clear
-   - needs_review: the evidence is incomplete, ambiguous, or
-     insufficient to safely approve the rule
-   - rejected: the rule contradicts the supplied evidence or is
-     demonstrably incorrect
+#     rules_json = json.dumps(rules, indent=2, default=str)
 
-9. If a rule is uncertain, do not invent a replacement just to fill
-   new_api. Use null when there is no confirmed replacement.
-   Classify migrations requiring human judgment as manual.
+#     system_prompt = """
+# You are a Python dependency migration rule validator.
 
-10. Keep every candidate rule in the output, including rejected
-    and uncertain ones, so the caller can audit the results.
+# Validate and normalize every candidate migration rule using the
+# provided source migration documentation and original extracted data.
 
-Return ONLY valid JSON in this exact structure:
+# Rules:
+# 1. Never assume an API replacement is valid because its name looks plausible.
+# 2. Do not invent APIs, source URLs, quotations, or evidence.
+# 3. Classify each rule as exactly one of:
+#    rename, structural, initialization, configuration, removal, manual.
+# 4. Definitions:
+#    - rename: a direct symbol replacement where nothing else changes (e.g. openai.proxy -> openai.proxies).
+#    - configuration: global module settings or attributes that must now be passed as client parameters or instance attributes (e.g. openai.api_key -> client.api_key or openai.base_url -> openai.base_url passed to client).
+#    - initialization / client_migration: requires instantiating a client object first.
+# 5. Set requires_instantiation to true, false, or null.
+# 6. Provide an actionable description explaining WHY it's a configuration or structural change.
+# 7. Preserve the original API and source evidence where possible.
+# 8. Set validation_status to exactly one of:
+#    validated, needs_review, rejected.
+# 9. A rule may be validated only when the supplied evidence supports the migration.
+# 10. If evidence is insufficient, use needs_review.
+# 11. If the old API was removed without a confirmed replacement, do not invent new_api. Use null.
+# 12. Keep every input rule in the output for auditability.
 
-{
-  "rules": [
-    {
-      "old_api": "string",
-      "new_api": "string or null",
-      "type": "one allowed type",
-      "requires_instantiation": true,
-      "description": "string",
-      "evidence": "existing supporting evidence or null",
-      "validation_status": "validated, needs_review, or rejected"
-    }
-  ]
-}
+# Return only valid JSON with this structure:
 
-The requires_instantiation field may also be false or null.
-Do not wrap the JSON in Markdown fences.
-"""
+# {
+#   "rules": [
+#     {
+#       "old_api": "string",
+#       "new_api": "string or null",
+#       "type": "configuration",
+#       "requires_instantiation": true,
+#       "description": "string",
+#       "evidence": "exact supporting excerpt or null",
+#       "source_url": "existing source URL or null",
+#       "validation_status": "validated"
+#     }
+#   ]
+# }
 
-    user_prompt = f"""
-PACKAGE: {package}
-CURRENT VERSION: {current_version}
-TARGET VERSION: {target_version}
+# Do not wrap the JSON in Markdown fences.
+# """
 
-CANDIDATE MIGRATION RULES:
-{rules_json}
+#     user_prompt = f"""
+# PACKAGE: {package}
+# CURRENT VERSION: {current_version}
+# TARGET VERSION: {target_version}
 
-RAW CODE EXAMPLES FOR USAGE CONTEXT ONLY:
-{examples_json}
+# ORIGINAL EXTRACTED RULES:
+# {rules_json}
 
-Validate and normalize every candidate rule.
-Do not silently discard any candidate.
-"""
+# RAW CODE EXAMPLES (usage context only):
+# {json.dumps(raw_code_examples or [], indent=2, default=str)}
 
-    try:
-        response = client.chat.complete(
-            model="codestral-latest",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
+# SOURCE MIGRATION DOCUMENTATION:
+# {source_evidence or "No source documentation supplied."}
 
-        content = response.choices[0].message.content
+# Validate every rule against the available source evidence.
+# Preserve original evidence and source URLs. Do not invent either.
+# """
 
-        if not isinstance(content, str) or not content.strip():
-            print("❌ Rule validation failed: empty model response.")
-            return []
+#     try:
+#         response = client.chat.complete(
+#             model="codestral-latest",
+#             messages=[
+#                 {"role": "system", "content": system_prompt},
+#                 {"role": "user", "content": user_prompt},
+#             ],
+#         )
 
-        # Allow JSON surrounded by Markdown fences, despite the prompt.
-        content = content.strip()
-        content = re.sub(
-            r"^```(?:json)?\s*|\s*```$",
-            "",
-            content,
-            flags=re.IGNORECASE,
-        ).strip()
+#         content = response.choices[0].message.content
 
-        result = json.loads(content)
+#         if not isinstance(content, str) or not content.strip():
+#             print("❌ Rule validation failed: empty model response.")
+#             return []
 
-        if not isinstance(result, dict):
-            raise ValueError("Response must be a JSON object.")
+#         content = content.strip()
 
-        normalized_rules = result.get("rules")
+#         if content.startswith("```"):
+#             content = re.sub(
+#                 r"^```(?:json)?\s*|\s*```$",
+#                 "",
+#                 content,
+#                 flags=re.IGNORECASE,
+#             ).strip()
 
-        if not isinstance(normalized_rules, list):
-            raise ValueError("'rules' must be a JSON list.")
+#         result = json.loads(content)
 
-        validated = []
-        needs_review = 0
-        rejected = 0
-        malformed = 0
+#         if not isinstance(result, dict):
+#             raise ValueError("Response must be a JSON object.")
 
-        for rule in normalized_rules:
-            if not isinstance(rule, dict):
-                malformed += 1
-                continue
+#         normalized_rules = result.get("rules")
 
-            old_api = rule.get("old_api")
-            new_api = rule.get("new_api")
-            migration_type = rule.get("type")
-            status = rule.get("validation_status")
-            requires_instantiation = rule.get(
-                "requires_instantiation"
-            )
-            description = rule.get("description")
-            evidence = rule.get("evidence")
+#         if not isinstance(normalized_rules, list):
+#             raise ValueError("'rules' must be a list.")
 
-            # Reject malformed or unexpected model output.
-            if (
-                not isinstance(old_api, str)
-                or not old_api.strip()
-                or migration_type not in ALLOWED_MIGRATION_TYPES
-                or status not in ALLOWED_VALIDATION_STATUSES
-                or not isinstance(description, str)
-                or not description.strip()
-            ):
-                malformed += 1
-                continue
+#         # Build evidence from the supplied sources, not from claims
+#         # invented by the model.
+#         source_text = source_evidence or ""
+#         original_text = rules_json
 
-            if new_api is not None and not isinstance(new_api, str):
-                malformed += 1
-                continue
+#         accepted = []
+#         needs_review = 0
+#         rejected = 0
+#         malformed = 0
 
-            if requires_instantiation not in (True, False, None):
-                malformed += 1
-                continue
+#         for rule in normalized_rules:
+#             if not isinstance(rule, dict):
+#                 malformed += 1
+#                 continue
 
-            if evidence is not None and not isinstance(evidence, str):
-                malformed += 1
-                continue
+#             old_api = rule.get("old_api")
+#             new_api = rule.get("new_api")
+#             migration_type = rule.get("type")
+#             status = rule.get("validation_status")
+#             requires_instantiation = rule.get(
+#                 "requires_instantiation"
+#             )
+#             description = rule.get("description")
+#             evidence = rule.get("evidence")
+#             source_url = rule.get("source_url")
 
-            # A rule cannot be automatically applied without a
-            # concrete replacement or an explicit removal operation.
-            if status == "validated":
-                if migration_type == "removal":
-                    # Removal still needs an actionable explanation.
-                    if not description.strip():
-                        malformed += 1
-                        continue
-                elif not new_api or not new_api.strip():
-                    needs_review += 1
-                    continue
+#             if (
+#                 not isinstance(old_api, str)
+#                 or not old_api.strip()
+#                 or migration_type not in allowed_types
+#                 or status not in allowed_statuses
+#                 or not isinstance(description, str)
+#                 or not description.strip()
+#             ):
+#                 malformed += 1
+#                 continue
 
-                # Require evidence or a reference preserved in the
-                # original candidate data. Do not trust a newly
-                # invented evidence statement from the model.
-                original_text = rules_json
-                original_evidence = evidence and (
-                    evidence in original_text
-                )
+#             if new_api is not None and not isinstance(new_api, str):
+#                 malformed += 1
+#                 continue
 
-                if not original_evidence:
-                    needs_review += 1
-                    continue
+#             if requires_instantiation not in (True, False, None):
+#                 malformed += 1
+#                 continue
 
-                validated.append({
-                    "old_api": old_api.strip(),
-                    "new_api": (
-                        new_api.strip()
-                        if isinstance(new_api, str)
-                        else None
-                    ),
-                    "type": migration_type,
-                    "requires_instantiation": requires_instantiation,
-                    "description": description.strip(),
-                    "evidence": evidence,
-                    "validation_status": "validated",
-                })
+#             if evidence is not None and not isinstance(evidence, str):
+#                 malformed += 1
+#                 continue
 
-            elif status == "needs_review":
-                needs_review += 1
+#             if source_url is not None and not isinstance(source_url, str):
+#                 malformed += 1
+#                 continue
 
-            else:
-                rejected += 1
+#             if status == "rejected":
+#                 rejected += 1
+#                 continue
 
-        print("\n========== Rule Validation Summary ==========")
-        print(f"Candidate rules: {len(rules)}")
-        print(f"Validated and accepted: {len(validated)}")
-        print(f"Needs review / insufficient evidence: {needs_review}")
-        print(f"Rejected by validator: {rejected}")
-        print(f"Malformed or invalid output: {malformed}")
-        print("==============================================\n")
+#             if status == "needs_review":
+#                 needs_review += 1
+#                 continue
 
-        return validated
+#             # Require a concrete replacement for automatic migrations.
+#             # Removal/manual rules need separate human-reviewed handling.
+#             if migration_type in {"removal", "manual"}:
+#                 needs_review += 1
+#                 continue
 
-    except (json.JSONDecodeError, ValueError, TypeError) as exc:
-        print(f"❌ Rule validation returned invalid output: {exc}")
-        return []
+#             if not isinstance(new_api, str) or not new_api.strip():
+#                 needs_review += 1
+#                 continue
 
-    except Exception as exc:
-        print(f"❌ Rule validation failed: {exc}")
-        return []
+#             # A rule must be supported by an actual excerpt from the
+#             # migration documentation. A URL or the original rule alone
+#             # does not prove that the proposed replacement is correct.
+            
+#             normalized_evidence = normalize_evidence_text(evidence)
+#             normalized_source = normalize_evidence_text(source_evidence)
+
+#             evidence_is_grounded = bool(
+#                 normalized_evidence
+#                 and normalized_source
+#                 and normalized_evidence in normalized_source
+#             )
+
+#             if not evidence_is_grounded:
+#                 print(
+#                     f"⚠️ Evidence mismatch: {old_api} -> {new_api}"
+#                 )
+#                 print(f"   Evidence returned: {evidence!r}")
+#                 print(f"   Source length: {len(source_evidence)}")
+#                 needs_review += 1
+#                 continue
+
+#             accepted.append({
+#                 "package": package,
+#                 "old_api": old_api.strip(),
+#                 "new_api": new_api.strip(),
+#                 "type": migration_type,
+#                 "requires_instantiation": requires_instantiation,
+#                 "description": description.strip(),
+#                 "evidence": evidence if evidence_is_grounded else None,
+#                 "source_url": source_url or None,
+#                 "validation_status": "validated",
+#             })
+
+#         print("\n========== Rule Validation Summary ==========")
+#         print(f"Candidate rules: {len(rules)}")
+#         print(f"Validated and accepted: {len(accepted)}")
+#         print(f"Needs review / insufficient evidence: {needs_review}")
+#         print(f"Rejected: {rejected}")
+#         print(f"Malformed: {malformed}")
+#         print("==============================================\n")
+
+#         return accepted
+
+#     except (json.JSONDecodeError, ValueError, TypeError) as exc:
+#         print(f"❌ Rule validation returned invalid output: {exc}")
+#         return []
+
+#     except Exception as exc:
+#         print(f"❌ Rule validation failed: {exc}")
+#         return []
 
 def stage0(package_name: str, parse):
     """
@@ -406,9 +415,10 @@ def code_patcher(
     with open(source_code, "r") as f:
         code = f.read()
 
-    if not rules or not matches:
+    
+    if not contains_items(rules) or not contains_items(matches):
         print(
-            "⚠️ No valid rules/matches provided. "
+            "No valid migration rules or matching usages. "
             "Retaining original code unmodified."
         )
         return code
@@ -652,6 +662,9 @@ def scraper(pkg_name, current_version, target_version, stage0_symbols):
         
     # Executes get_migration_chain + merge_rule_chain across all major version jumps
     composed_rules, doc_text, raw_code_examples = run_stage1_pipeline(pkg_name, current_version=current_version, target_version=target_version, stage0_symbols=stage0_symbols)
+
+    print(composed_rules)
+    print(raw_code_examples)
     
     
     
@@ -665,6 +678,7 @@ def scraper(pkg_name, current_version, target_version, stage0_symbols):
     print("--- [Stage 2] Relevance & Completeness Audit ---")
     print("==================================================")
     dynamic_stage0_symbols = stage0_symbols
+    print(stage0_symbols)
     audit = evaluate_relevance_and_completeness(dynamic_stage0_symbols, composed_rules, doc_text)
 
     raw_missing = audit.get('missing_symbols', [])
@@ -697,9 +711,11 @@ def scraper(pkg_name, current_version, target_version, stage0_symbols):
 
     # target_version = "v1.0.0"  # Target major version boundary
 
+    # print(doc_text)
+
     print(report, relevant_rules, target_version)
 
-    return report, relevant_rules, raw_code_examples
+    return report, relevant_rules, raw_code_examples, doc_text
 
 
 

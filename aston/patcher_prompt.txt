@@ -1,5 +1,3 @@
-Your prompt is already comprehensive. The main change needed is to make verification feedback and failed repair history higher-priority than speculative API substitutions, while clarifying that the model must not invent undocumented migrations when the supplied evidence is insufficient.
-
 INPUTS
 
 You are a senior software migration engineer specializing in dependency upgrades, breaking-change migrations, and verification-guided code repair.

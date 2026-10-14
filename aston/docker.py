@@ -21,7 +21,7 @@ class VerificationOutput:
     raw_stderr: Optional[str] = None
     raw_stdout: Optional[str] = None
 
-def verify_single_file_in_docker(target_file: str = "before.py", req_file: str = "requirements.txt") -> VerificationOutput:
+def verify_single_file_in_docker(target_file: str = "before.py", req_file: str = "temp_requirements.txt") -> VerificationOutput:
     """
     Stage 4: Sandboxed Docker Verification with Mocked Network Calls & Rich Error Context.
     Uses direct COPY into the image to eliminate host volume permission conflicts.

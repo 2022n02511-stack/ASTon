@@ -1,16 +1,16 @@
 # sma/pipeline.py
-from aston.axios import code_patcher, stage0, scraper, validate_and_normalize_rules
+from aston.axios import code_patcher, stage0, scraper
 from aston.docker import verify_single_file_in_docker, VerificationResult
 from aston.watcher import watcher
 from aston.scanner import parser
 from pathlib import Path
+import json
 
 
-def run_for_repo(path : str):
-
+def run_for_repo(path: str):
     rep_con = None
 
-    with open('repair_context.txt', 'r') as f:
+    with open("repair_context.txt", "r") as f:
         rep_con = f.read()
 
     breaking_changes = watcher(path)
@@ -33,67 +33,80 @@ def run_for_repo(path : str):
     raw_code_examples = []
 
     for change in breaking_changes:
-
         stage0_symbols = stage0(change["pkg_name"], parses)
-        report, relevant_rules, raw_code = scraper(change["pkg_name"], change["current_version"], change["target_version"], stage0_symbols)
 
-        validated_rules = validate_and_normalize_rules(
-        package=change["pkg_name"],
-        current_version=change["current_version"],
-        target_version=change["target_version"],
-        rules=relevant_rules,
-        raw_code_examples=raw_code,
+        report, relevant_rules, raw_code, doc_text = scraper(
+            change["pkg_name"],
+            change["current_version"],
+            change["target_version"],
+            stage0_symbols,
+        )
+
+        # ---------------------------------------------------------
+        # BYPASSING VALIDATOR: Passing extracted rules directly
+        # ---------------------------------------------------------
+        all_rules.append({change["pkg_name"]: relevant_rules})
+        all_reports.append({change["pkg_name"]: report})
+        all_cur_vers.append({change["pkg_name"]: change["current_version"]})
+        all_tar_vers.append({change["pkg_name"]: change["target_version"]})
+        
+        if isinstance(raw_code, list):
+            raw_code_examples.extend(raw_code)
+
+    has_valid_rules = any(
+        isinstance(group, dict)
+        and any(
+            isinstance(rule_list, list) and len(rule_list) > 0
+            for rule_list in group.values()
+        )
+        for group in all_rules
     )
 
-    all_rules.append({
-        change["pkg_name"]: validated_rules
-    })
-    all_reports.append({
-        change["pkg_name"]: report
-    })
-    all_cur_vers.append({
-        change["pkg_name"]: change["current_version"]
-    })
-    all_tar_vers.append({
-        change["pkg_name"]: change["target_version"]
-    })
-    raw_code_examples.append(raw_code)
+    has_valid_matches = any(
+        isinstance(group, dict)
+        and any(
+            isinstance(match_list, list) and len(match_list) > 0
+            for match_list in group.values()
+        )
+        for group in all_reports
+    )
 
+    if not has_valid_rules or not has_valid_matches:
+        print(
+            "⚠️ No migration rules or matching usages found. "
+            "Skipping patch generation."
+        )
+        return
 
-    # folder_path = Path()
-    # source_code = None
+    print("\n========== RULES SENT TO PATCHER ==========")
+    print(json.dumps(all_rules, indent=2, default=str))
+    print("\n========== MATCHES SENT TO PATCHER ==========")
+    print(json.dumps(all_reports, indent=2, default=str))
 
-    # with open('/demo/sample.py', "r") as f:
-    #     source_code = f.read()
-
-    # raw_code_examples = MigrationRuleset.raw_example_blocks
-
-    factored_code = code_patcher('before.py', all_reports, all_rules, all_tar_vers, all_cur_vers, None, raw_code_examples=raw_code_examples)
-
-
-
-        
-
-    # fixed_code = None
-    # report = None
-    # rules = None
-    # target_version = None
-
-    # print("Starting ASTon...")
-
-    # fixed_code, report, rules, target_version = run_chain_migration('openai')
-
-
+    factored_code = code_patcher(
+        "before.py",
+        all_reports,
+        all_rules,
+        all_tar_vers,
+        all_cur_vers,
+        None,
+        raw_code_examples=raw_code_examples,
+    )
 
     if factored_code:
         MAX_RETRIES = 3
         retry_count = 0
         previous_attempts = []
 
-        pr = verify_single_file_in_docker(
-            target_file="before.py",
-            req_file=str(Path(path) / "requirements.txt"),
-        )
+
+        temp_req_path = Path("temp_requirements.txt")
+        req_lines = [
+            f"{change['pkg_name']}=={change['target_version']}"
+            for change in breaking_changes
+        ]
+        temp_req_path.write_text("\n".join(req_lines) + "\n")
+        
+        pr = verify_single_file_in_docker("before.py", temp_req_path)
 
         while (
             pr.status == VerificationResult.MIGRATION_ERROR
@@ -101,17 +114,14 @@ def run_for_repo(path : str):
         ):
             retry_count += 1
 
-            # Capture the exact source that just failed verification.
             failed_source = Path(pr.target_file).read_text()
-
-            failed_attempt = {
+            previous_attempts.append({
                 "attempt": retry_count,
                 "source_code": failed_source,
                 "error_type": pr.error_type,
                 "error_message": pr.error_message,
                 "traceback": pr.raw_stderr,
-            }
-            previous_attempts.append(failed_attempt)
+            })
 
             print(
                 f"\n⚠️ Stage 4 Failed with {pr.error_type} "
@@ -139,19 +149,12 @@ def run_for_repo(path : str):
                 raw_code_examples=raw_code_examples,
             )
 
-            # Stop if the patcher did not produce a new candidate.
             current_source = Path("before.py").read_text()
             if current_source == failed_source:
-                print(
-                    "❌ Repair produced no new source. "
-                    "Stopping to avoid repeating the same failure."
-                )
+                print("❌ Repair produced no new source. Stopping.")
                 break
 
-            pr = verify_single_file_in_docker(
-                target_file="before.py",
-                req_file=str(Path(path) / "requirements.txt"),
-            )
+            pr = verify_single_file_in_docker("before.py", temp_req_path)
 
         if pr.status == VerificationResult.PASS:
             print("\n✅ Sandboxed Verification Successful!")
@@ -168,6 +171,5 @@ def run_for_repo(path : str):
                 f"\n❌ Stage 5 stopped after {retry_count} repair attempts. "
                 "Manual intervention required."
             )
-
         else:
             print(f"\n⚠️ Pipeline halted due to verification status: {pr.status}")

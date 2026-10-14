@@ -5,11 +5,10 @@ import requests
 # 1. Non-call property and error references
 api_key = openai.api_key
 base_url = openai.base_url
-proxy_setting = openai.proxy
+proxy_setting = openai.proxies
 
 # 2. Legacy OpenAI call (v0.28.1 style)
-client = openai.OpenAI()
-response = client.chat.completions.create(
+response = openai.ChatCompletion.create(
     model="gpt-3.5-turbo",
     messages=[
         {"role": "user", "content": "Hello from legacy OpenAI"}

@@ -33,7 +33,7 @@
     "package": "openai",
     "old_api": "openai.ChatCompletion.create",
     "new_api": "client.chat.completions.create",
-    "requires_instantiation": "Instantiate a client",
+    "requires_instantiation": null,
     "migration_type": "rename",
     "description": null,
     "example_before": null,

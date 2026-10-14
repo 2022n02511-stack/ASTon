@@ -1,5 +1,3 @@
-"""Stage 1: discover migration documentation, extract rules, and preserve examples."""
-
 import base64
 import hashlib
 import json
@@ -32,7 +30,7 @@ class MigrationRule(BaseModel):
     package: str
     old_api: str
     new_api: str
-    requires_instantiation: str | None = None
+    requires_instantiation: bool | None = None
     migration_type: str | None = None
     description: str | None = None
     example_before: str | None = None
@@ -389,13 +387,18 @@ def extract_rules(package: str, doc_text: str) -> MigrationRuleset:
     )
 
     parsed = response.choices[0].message.parsed
+
+    # print(parsed)
     if parsed is None:
         raise RuntimeError(f"Codestral returned no parsed ruleset for {package}")
 
     normalized = normalize_rule_symbols([rule.model_dump() for rule in parsed.rules])
+    # print(normalized)
     for rule in normalized:
         # The package is known by the caller; do not trust a model-generated value.
         rule["package"] = package
+
+    
 
     blocks = _validate_raw_blocks(parsed.raw_example_blocks, truncated_text)
     return MigrationRuleset(
@@ -479,5 +482,8 @@ def run_stage1_pipeline(
 
     print(f"\n✅ Rule Chain Composition Complete. Total Merged Rules: {len(merged_rules)}")
     print(f"📄 Combined Migration Documentation: {len(migration_doc_text)} characters")
+
+    # print(merged_rules)
+    # print(migration_doc_text)
 
     return merged_rules, migration_doc_text, all_raw_example_blocks
