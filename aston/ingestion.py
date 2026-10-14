@@ -328,7 +328,7 @@ def _github_headers() -> dict[str, str]:
         headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
     return headers
 
-EXTRACTION_SCHEMA_VERSION = "v2-validated"
+EXTRACTION_SCHEMA_VERSION = "v3-validated-with-statuses-7"
 
 def _cache_path(package: str, tag: str, doc_text: str, stage0_symbols: set[str]) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)

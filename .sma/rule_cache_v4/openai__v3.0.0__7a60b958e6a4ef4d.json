@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "package": "openai",
+      "old_api": "httpx",
+      "new_api": "httpx2",
+      "requires_instantiation": false,
+      "migration_type": "structural",
+      "description": "HTTPX2 is now the default HTTP client, and httpx is no longer installed automatically. Applications using custom HTTPX clients, transports, or configuration objects must migrate to their HTTPX2 equivalents or use the temporary, runtime-only legacy HTTPX escape hatch.",
+      "from_version": "2.54.0",
+      "to_version": "3.0.0",
+      "example_before": null,
+      "example_after": null,
+      "evidence": "HTTPX2 is now the default HTTP client, and httpx is no longer installed automatically. Applications using custom HTTPX clients, transports, or configuration objects must migrate to their HTTPX2 equivalents or use the temporary, runtime-only legacy HTTPX escape hatch.",
+      "source_url": "https://github.com/openai/openai-python/compare/v2.54.0...v3.0.0",
+      "validation_status": "validated"
+    }
+  ],
+  "raw_example_blocks": []
+}

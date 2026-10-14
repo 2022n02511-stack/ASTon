@@ -4,6 +4,7 @@ from aston.watcher import watcher
 from aston.scanner import parser
 from pathlib import Path
 import json
+from aston.rule_validation import validate_rules_against_target, validate_all_rules, reconcile_report
 
 
 def run_for_repo(path: str):
@@ -22,6 +23,11 @@ def run_for_repo(path: str):
         return
 
     parses = parser()
+
+    print("\n========== RAW PARSER OUTPUT ==========")
+    for record in parses:
+        if record.get("package") == "openai":
+            print(record)
 
     print(f"\n==================================================")
     print(f"--- [Stage 0] Fetching Dynamic AST Scanned Usages ---")
@@ -60,12 +66,12 @@ def run_for_repo(path: str):
         if isinstance(raw_code, list):
             raw_code_examples.extend(raw_code)
 
-    has_valid_rules = any(len(rules) > 0 for rules in all_rules.values())
-    has_valid_matches = any(len(matches) > 0 for matches in all_reports.values())
+    # has_valid_rules = any(len(rules) > 0 for rules in all_rules.values())
+    # has_valid_matches = any(len(matches) > 0 for matches in all_reports.values())
 
-    if not has_valid_rules or not has_valid_matches:
-        print("⚠️ No migration rules or matching usages found. Skipping patch generation.")
-        return
+    # if not has_valid_rules or not has_valid_matches:
+    #     print("⚠️ No migration rules or matching usages found. Skipping patch generation.")
+    #     return
 
     # FIXED: completeness was computed in scraper() but never surfaced here —
     # pipeline proceeded regardless. Now at minimum it's visible before you
@@ -82,10 +88,51 @@ def run_for_repo(path: str):
     print("\n========== MATCHES SENT TO PATCHER ==========")
     print(json.dumps(all_reports, indent=2, default=str))
 
+    flat_all_rules = []
+
+    for pkg, pkg_rules in all_rules.items():
+        for rule in pkg_rules:
+            rule = dict(rule)
+            rule.setdefault("package", pkg)
+            flat_all_rules.append(rule)
+
+    validated_rules = validate_all_rules(
+        all_rules=flat_all_rules,
+        all_target_versions=all_tar_vers,
+        req_file=Path(path) / "requirements.txt",
+    )
+
+    final_report_dict = reconcile_report(
+        extraction_report={"rules": validated_rules},
+        validated_rules=validated_rules,
+    )
+
+    with open("changes.json", "w") as f:
+        json.dump(final_report_dict, f, indent=2)
+    print("📁 Canonical audit contract saved to changes.json")
+
+    # 4. Rebuild the package-keyed dictionary with ALL validated rules (keeping statuses)
+    validated_all_rules_dict = {}
+    for rule in validated_rules:
+        pkg = rule.get("package")
+        if pkg not in validated_all_rules_dict:
+            validated_all_rules_dict[pkg] = []
+        validated_all_rules_dict[pkg].append(rule)
+
+    has_valid_rules = any(len(rules) > 0 for rules in validated_all_rules_dict.values())
+    has_valid_matches = any(len(matches) > 0 for matches in all_reports.values())
+
+    if not has_valid_rules or not has_valid_matches:
+        print("⚠️ No migration rules or matching usages found. Skipping patch generation.")
+        return    
+
+    print("\n========== ALL VALIDATED RULES (WITH STATUSES) SENT TO PATCHER ==========")
+    print(json.dumps(validated_all_rules_dict, indent=2, default=str))
+
     factored_code = code_patcher(
         "before.py",
         all_reports,
-        all_rules,
+        validated_all_rules_dict,
         all_tar_vers,
         all_cur_vers,
         None,
@@ -100,7 +147,7 @@ def run_for_repo(path: str):
     temp_req_path = Path("temp_requirements.txt")
     original_req_path = Path(path) / "requirements.txt"
     
-    # 1. Start with everything already in the project's requirements.txt (e.g., requests, etc.)
+    # 1. Start with everything already in the project's requirements.txt
     req_lines = original_req_path.read_text().splitlines() if original_req_path.exists() else []
     
     # 2. Ensure each target breaking change package and version is updated/added
@@ -119,62 +166,62 @@ def run_for_repo(path: str):
         if not found:
             req_lines.append(new_req_line)
             
-    # 3. Write out the fully populated dependencies list for Docker
-        temp_req_path.write_text("\n".join(req_lines) + "\n")
+    # 3. Write out the fully populated dependencies list ONCE (fixed indentation)
+    temp_req_path.write_text("\n".join(req_lines) + "\n")
+
+    pr = verify_single_file_in_docker("before.py", temp_req_path)
+
+    while pr.status == VerificationResult.MIGRATION_ERROR and retry_count < MAX_RETRIES:
+        retry_count += 1
+
+        failed_source = Path(pr.target_file).read_text()
+        previous_attempts.append({
+            "attempt": retry_count,
+            "source_code": failed_source,
+            "error_type": pr.error_type,
+            "error_message": pr.error_message,
+            "traceback": pr.raw_stderr,
+        })
+
+        print(f"\n⚠️ Stage 4 Failed with {pr.error_type} (Attempt {retry_count}/{MAX_RETRIES})")
+        print("Routing to Stage 5 Self-Healing Repair Loop...")
+
+        repair_context = {
+            "file_name": pr.target_file,
+            "error_type": pr.error_type,
+            "error_message": pr.error_message,
+            "traceback": pr.raw_stderr,
+            "attempted_code": failed_source,
+            "previous_attempts": previous_attempts,
+            "repair_instructions": rep_con,
+        }
+
+        factored_code = code_patcher(
+            "before.py",
+            all_reports,
+            validated_all_rules_dict,  # ✅ Fixed: pass validated rules here too!
+            all_tar_vers,
+            all_cur_vers,
+            repair_context=repair_context,
+            raw_code_examples=raw_code_examples,
+        )
+
+        current_source = Path("before.py").read_text()
+        if current_source == failed_source:
+            print("❌ Repair produced no new source. Stopping.")
+            break
 
         pr = verify_single_file_in_docker("before.py", temp_req_path)
 
-        while pr.status == VerificationResult.MIGRATION_ERROR and retry_count < MAX_RETRIES:
-            retry_count += 1
-
-            failed_source = Path(pr.target_file).read_text()
-            previous_attempts.append({
-                "attempt": retry_count,
-                "source_code": failed_source,
-                "error_type": pr.error_type,
-                "error_message": pr.error_message,
-                "traceback": pr.raw_stderr,
-            })
-
-            print(f"\n⚠️ Stage 4 Failed with {pr.error_type} (Attempt {retry_count}/{MAX_RETRIES})")
-            print("Routing to Stage 5 Self-Healing Repair Loop...")
-
-            repair_context = {
-                "file_name": pr.target_file,
-                "error_type": pr.error_type,
-                "error_message": pr.error_message,
-                "traceback": pr.raw_stderr,
-                "attempted_code": failed_source,
-                "previous_attempts": previous_attempts,
-                "repair_instructions": rep_con,
-            }
-
-            factored_code = code_patcher(
-                "before.py",
-                all_reports,
-                all_rules,
-                all_tar_vers,
-                all_cur_vers,
-                repair_context=repair_context,
-                raw_code_examples=raw_code_examples,
-            )
-
-            current_source = Path("before.py").read_text()
-            if current_source == failed_source:
-                print("❌ Repair produced no new source. Stopping.")
-                break
-
-            pr = verify_single_file_in_docker("before.py", temp_req_path)
-
-        if pr.status == VerificationResult.PASS:
-            print("\n✅ Sandboxed Verification Successful!")
-            yes_no = input("Do you wanna patch it? [Y/n]: ").strip().lower()
-            if yes_no in ["y", "yes", ""]:
-                Path("sample.py").write_text(factored_code)
-                print("🎉 Code successfully patched and saved to sample.py")
-            else:
-                print("Exit without applying patch.")
-        elif pr.status == VerificationResult.MIGRATION_ERROR:
-            print(f"\n❌ Stage 5 stopped after {retry_count} repair attempts. Manual intervention required.")
+    if pr.status == VerificationResult.PASS:
+        print("\n✅ Sandboxed Verification Successful!")
+        yes_no = input("Do you wanna patch it? [Y/n]: ").strip().lower()
+        if yes_no in ["y", "yes", ""]:
+            Path("sample.py").write_text(factored_code)
+            print("🎉 Code successfully patched and saved to sample.py")
         else:
-            print(f"\n⚠️ Pipeline halted due to verification status: {pr.status}")
+            print("Exit without applying patch.")
+    elif pr.status == VerificationResult.MIGRATION_ERROR:
+        print(f"\n❌ Stage 5 stopped after {retry_count} repair attempts. Manual intervention required.")
+    else:
+        print(f"\n⚠️ Pipeline halted due to verification status: {pr.status}")

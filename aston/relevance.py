@@ -1,18 +1,21 @@
 import re
 
 
+
 def normalize_api_symbol(symbol: str) -> str:
     """
-    Normalize API symbols so syntactic differences such as
-    'foo.bar()' vs 'foo.bar' do not cause false mismatches.
+    Normalize formatting without changing Python identifier casing.
     """
+    if not isinstance(symbol, str):
+        return ""
+
     symbol = symbol.strip()
 
-    # Remove trailing call parentheses.
     if symbol.endswith("()"):
         symbol = symbol[:-2]
 
     return symbol
+
 
 def canonicalize_usage(record):
     package = record.get("package")
@@ -55,49 +58,52 @@ def determine_expected_affected_symbols(
     return expected
 
 
+
+
 def evaluate_relevance_and_completeness(
     stage0_symbols: set[str],
     extracted_records: list[dict],
-    migration_doc_text: str
+    migration_doc_text: str,
 ) -> dict:
-    """
-    Non-circular audit.
-
-    Stage 0 determines what the codebase actually uses.
-    Migration documentation independently determines which of
-    those usages appear relevant.
-    LLM extraction is then compared against that expected set.
-    """
-
-    expected_affected = determine_expected_affected_symbols(
-        stage0_symbols,
-        migration_doc_text
-    )
-
-    extracted_old_apis = {
-        normalize_api_symbol(rec["old_api"])
-        for rec in extracted_records
+    observed_symbols = {
+        normalize_api_symbol(s)
+        for s in stage0_symbols
+        if normalize_api_symbol(s)
     }
 
-    missing_symbols = expected_affected - extracted_old_apis
+    old_to_new = {}
+    for record in extracted_records:
+        old_api = normalize_api_symbol(record.get("old_api", ""))
+        new_api = normalize_api_symbol(record.get("new_api", ""))
 
-    is_complete = len(missing_symbols) == 0
+        if old_api:
+            old_to_new.setdefault(old_api, []).append(new_api)
 
-    relevant_records = []
+    known_old_apis = set(old_to_new)
+    known_target_apis = {
+        target
+        for targets in old_to_new.values()
+        for target in targets
+        if target
+    }
 
-    for rec in extracted_records:
-        normalized_old_api = normalize_api_symbol(rec["old_api"])
+    relevant_records = [
+        {
+            **record,
+            "old_api": normalize_api_symbol(record.get("old_api", "")),
+        }
+        for record in extracted_records
+        if normalize_api_symbol(record.get("old_api", ""))
+        in observed_symbols
+    ]
 
-        if normalized_old_api in expected_affected:
-            # Normalize the record too so Stage 3 receives
-            # the same representation as Stage 0.
-            normalized_record = rec.copy()
-            normalized_record["old_api"] = normalized_old_api
-            relevant_records.append(normalized_record)
+    # Observed symbols already recognized as migration targets are not
+    # missing old-API rules.
+    unresolved_symbols = observed_symbols - known_old_apis - known_target_apis
 
     return {
-        "is_complete": is_complete,
-        "expected_affected_symbols": list(expected_affected),
-        "missing_symbols": list(missing_symbols),
-        "relevant_records": relevant_records
+        "is_complete": not unresolved_symbols,
+        "expected_affected_symbols": sorted(observed_symbols),
+        "missing_symbols": sorted(unresolved_symbols),
+        "relevant_records": relevant_records,
     }

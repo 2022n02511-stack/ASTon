@@ -1,190 +1,300 @@
 import json
 import subprocess
+import tempfile
 from pathlib import Path
+
+def validate_all_rules(
+    all_rules: list[dict],
+    all_target_versions: dict[str, str],
+    req_file: str,
+    distribution_names: dict[str, str] | None = None,
+) -> list[dict]:
+    from collections import defaultdict
+
+    distribution_names = distribution_names or {}
+    groups = defaultdict(list)
+
+    for index, rule in enumerate(all_rules):
+        package = rule.get("package")
+        if not package:
+            rule.setdefault("target_api_status", "unprobed")
+            rule.setdefault("resolution_reason", "Rule has no package identifier")
+            continue
+
+        target_version = all_target_versions.get(package)
+        if not target_version:
+            rule["target_api_status"] = "unprobed"
+            rule["validation_status"] = "not_validated"
+            rule["resolution_reason"] = f"No target version configured for {package}"
+            continue
+
+        groups[(package, target_version)].append((index, rule))
+
+    validated_by_index = {}
+
+    for (package, target_version), indexed_rules in groups.items():
+        rules_for_package = [rule for _, rule in indexed_rules]
+
+        # PASS all_target_versions HERE:
+        validated = validate_rules_against_target(
+            rules=rules_for_package,
+            pkg_name=package,
+            target_version=target_version,
+            all_target_versions=all_target_versions,
+            req_file=req_file,
+            distribution_name=distribution_names.get(package),
+        )
+
+        for (original_index, _), validated_rule in zip(indexed_rules, validated):
+            validated_by_index[original_index] = validated_rule
+
+    for index, rule in enumerate(all_rules):
+        if index not in validated_by_index:
+            validated_by_index[index] = rule
+
+    return [validated_by_index[index] for index in range(len(all_rules))]
+
+
+def reconcile_report(
+    extraction_report: dict,
+    validated_rules: list[dict],
+) -> dict:
+    """
+    Create a report consistent with the validated rule set.
+    Preserve extraction-stage information.
+    """
+    report = dict(extraction_report)
+
+    report["rules"] = validated_rules
+    report["total_rules"] = len(validated_rules)
+
+    report["target_api_exists"] = sum(
+        rule.get("target_api_status") == "target_api_exists"
+        for rule in validated_rules
+    )
+
+    report["target_api_missing"] = sum(
+        rule.get("target_api_status") == "target_api_missing"
+        for rule in validated_rules
+    )
+
+    report["unverifiable_rules"] = sum(
+        rule.get("target_api_status") in {
+            "unverifiable",
+            "probe_failed",
+            "unprobed",
+        }
+        for rule in validated_rules
+    )
+
+    return report
 
 def validate_rules_against_target(
     rules: list[dict],
     pkg_name: str,
     target_version: str,
-    req_file: str,
-    current_version: str = None
+    all_target_versions: dict[str, str] | None = None,
+    req_file: str | Path = "temp_requirements.txt",
+    distribution_name: str | None = None,
+    python_image: str = "python:3.11-slim",
+    timeout: int = 600,
 ) -> list[dict]:
-    """
-    Stage 2.5: Target API Environment Validation
-    
-    Inspected against the pinned target SDK version in Docker/sandbox.
-    Degrees of failure handled:
-      1. 'exists': API verified successfully in target SDK.
-      2. 'missing': API symbol does not exist in target SDK version.
-      3. 'unverifiable': Could not safely evaluate/traverse the API path.
-    
-    Mutates invalid rules to 'not_validated' and marks new_api as unresolved 
-    while preserving historical records.
-    """
-    if not rules:
-        return []
+    req_file = Path(req_file).resolve()
+    distribution_name = distribution_name or pkg_name
+    all_target_versions = all_target_versions or {pkg_name: target_version}
 
-    print(f"\n==================================================")
-    print(f"--- [Stage 2.5] Target API Environment Validation ---")
-    print(f"==================================================")
-    print(f"Target SDK Scope: {pkg_name} ({current_version or 'any'} -> {target_version})")
+    prepared_rules = []
+    for original in rules:
+        rule = dict(original)
+        rule.setdefault("evidence_status", "unknown")
+        rule.setdefault("chain_status", "unresolved")
+        rule.setdefault("target_api_status", "unprobed")
+        rule.setdefault("verification_status", "not_run")
 
-    probe_payload = []
-    for idx, rule in enumerate(rules):
-        # Ensure version bounds are stamped on the rule if missing
-        if current_version and "from_version" not in rule:
-            rule["from_version"] = current_version
-        if target_version and "target_version" not in rule:
-            rule["target_version"] = target_version
+        candidate = rule.get("candidate_new_api") or rule.get("new_api")
+        rule["candidate_new_api"] = candidate
 
-        new_api = rule.get("new_api")
-        if not new_api or "UNRESOLVED" in new_api:
+        if not candidate or "UNRESOLVED" in str(candidate).upper():
+            rule["target_api_status"] = "unverifiable"
             rule["validation_status"] = "not_validated"
-            rule["target_validation_status"] = "missing"
-            continue
+            rule["resolution_reason"] = rule.get("resolution_reason") or "No documented replacement API"
+        else:
+            rule["target_api_status"] = "pending"
+            rule["validation_status"] = "pending"
 
-        probe_payload.append({
-            "id": idx,
-            "old_api": rule.get("old_api"),
-            "new_api": new_api,
-            "requires_instantiation": rule.get("requires_instantiation")
-        })
+        prepared_rules.append(rule)
 
-    if not probe_payload:
-        return rules
+    if not prepared_rules or not req_file.is_file():
+        return prepared_rules
 
-    # Generate the inspection probe script
-    probe_code = f"""
+    # Worker script updated to loop through and install ALL target versions simultaneously
+    worker_script = r'''
+import importlib
 import json
+import subprocess
 import sys
 
-pkg_name = {pkg_name!r}
-rules_to_check = {json.dumps(probe_payload)}
-results = {{}}
+requirements_path, import_name, version_map_json, rules_path = sys.argv[1:5]
+version_map = json.loads(version_map_json)
+
+def install(args):
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", *args],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        raise RuntimeError("pip install failed:\n" + result.stderr[-12000:])
+
+def resolve_attribute(root, path):
+    current = root
+    for part in path.split("."):
+        if not part:
+            raise AttributeError("Empty attribute in API path")
+        current = getattr(current, part)
+    return current
+
+def probe_api(module, api):
+    if not isinstance(api, str) or not api.strip():
+        return "unverifiable", "No usable candidate API"
+    api = api.strip()
+    if api.startswith("client."):
+        return "unverifiable", "Instance-based API requires a package-specific adapter"
+    
+    if api == import_name:
+        path = ""
+    elif api.startswith(import_name + "."):
+        path = api[len(import_name) + 1:]
+    else:
+        path = api
+
+    if not path:
+        return "exists", "Package module imported successfully"
+
+    try:
+        resolve_attribute(module, path)
+        return "exists", "Destination attribute resolved"
+    except (AttributeError, ImportError, ModuleNotFoundError) as exc:
+        return "missing", f"{type(exc).__name__}: {exc}"
+    except Exception as exc:
+        return "unverifiable", f"{type(exc).__name__}: {exc}"
 
 try:
-    module = __import__(pkg_name)
-except Exception as e:
-    print(json.dumps({{"error": f"Failed to import {{pkg_name}}: {{e}}"}}))
-    sys.exit(0)
+    # 1. Install project base requirements
+    install(["-r", requirements_path])
 
-for item in rules_to_check:
-    rid = item["id"]
-    new_api = item["new_api"]
-    requires_init = item.get("requires_instantiation")
-    
-    eval_target = new_api
-    if eval_target.startswith("client."):
-        eval_target = eval_target.replace("client.", "client_instance.", 1)
+    # 2. Upgrade ALL target packages together simultaneously
+    upgrade_args = ["--upgrade", "--upgrade-strategy", "only-if-needed"]
+    for pkg, ver in version_map.items():
+        upgrade_args.append(f"{pkg}=={ver}")
+    install(upgrade_args)
+
+    # 3. Check for dependency conflicts
+    check = subprocess.run([sys.executable, "-m", "pip", "check"], capture_output=True, text=True)
+    if check.returncode:
+        print(json.dumps({"environment_status": "dependency_conflict", "details": (check.stdout + "\n" + check.stderr)[-12000:], "rules": []}))
+        sys.exit(0)
 
     try:
-        namespace = {{pkg_name: module}}
-        
-        if requires_init or "client" in new_api:
-            client_class = None
-            for attr_name in dir(module):
-                cls_candidate = getattr(module, attr_name)
-                if isinstance(cls_candidate, type) and ("client" in attr_name.lower() or attr_name == "OpenAI"):
-                    client_class = cls_candidate
-                    break
-            
-            if client_class:
-                try:
-                    namespace["client_instance"] = client_class(api_key="test-dummy-key")
-                except Exception:
-                    try:
-                        namespace["client_instance"] = client_class()
-                    except Exception:
-                        pass
+        module = importlib.import_module(import_name)
+    except Exception as exc:
+        print(json.dumps({"environment_status": "import_failed", "details": f"{type(exc).__name__}: {exc}", "rules": []}))
+        sys.exit(0)
 
-        parts = eval_target.split(".")
-        current = namespace
-        exists = True
-        for part in parts:
-            if isinstance(current, dict):
-                if part in current:
-                    current = current[part]
-                else:
-                    exists = False
-                    break
-            else:
-                if hasattr(current, part):
-                    current = getattr(current, part)
-                else:
-                    exists = False
-                    break
+    with open(rules_path, encoding="utf-8") as file:
+        rules = json.load(file)
 
-        results[str(rid)] = "exists" if exists else "missing"
-    except Exception:
-        results[str(rid)] = "unverifiable"
-
-print(json.dumps(results))
-"""
-
-    probe_file = Path("target_probe.py")
-    probe_file.write_text(probe_code)
-
-    validation_results = {}
-    try:
-        # Execute probe inside Docker using the target requirements file
-        output = subprocess.check_output(
-            [
-                "docker", "run", "--rm",
-                "-v", f"{Path.cwd().resolve()}:/app",
-                "-w", "/app",
-                "python:3.11-slim",
-                "bash", "-c", f"pip install -q -r {req_file} && python target_probe.py"
-            ],
-            text=True,
-            timeout=60
-        )
-        for line in reversed(output.strip().splitlines()):
-            if line.startswith("{") and line.endswith("}"):
-                validation_results = json.loads(line)
-                break
-    except Exception as e:
-        print(f"⚠️ Docker probe failed ({e}); falling back to local Python environment.")
-        try:
-            local_out = subprocess.check_output(["python", "target_probe.py"], text=True, timeout=15)
-            for line in reversed(local_out.strip().splitlines()):
-                if line.startswith("{") and line.endswith("}"):
-                    validation_results = json.loads(line)
-                    break
-        except Exception:
-            pass
-
-    if probe_file.exists():
-        probe_file.unlink()
-
-    # Process and mutate rules based on verification status and degrees of failure
-    validated_rules = []
-    for idx, rule in enumerate(rules):
-        rule_copy = dict(rule)
-        
-        # Skip if already marked missing above
-        if "target_validation_status" in rule_copy and rule_copy["target_validation_status"] == "missing":
-            validated_rules.append(rule_copy)
+    results = []
+    for index, rule in enumerate(rules):
+        candidate = rule.get("candidate_new_api") or rule.get("new_api")
+        if not candidate or "UNRESOLVED" in str(candidate).upper():
+            results.append({"index": index, "status": "unverifiable", "reason": "No documented replacement API"})
             continue
+        status, reason = probe_api(module, candidate)
+        results.append({"index": index, "status": status, "reason": reason})
 
-        status = validation_results.get(str(idx), "unverifiable")
-        rule_copy["target_validation_status"] = status
+    print(json.dumps({"environment_status": "ready", "rules": results}))
 
-        if status == "exists":
-            rule_copy["validation_status"] = "validated"
-            print(f"  ✓ Validated: {rule_copy.get('old_api')} -> {rule_copy.get('new_api')} [EXISTS]")
-            
-        elif status == "missing":
-            rule_copy["validation_status"] = "not_validated"
-            rule_copy["new_api"] = "UNRESOLVED: target API missing"
-            rule_copy["description"] = (rule_copy.get("description") or "") + " [Target Verification Failed: API missing in target SDK version]"
-            print(f"  ❌ Rejected (Missing): {rule_copy.get('old_api')} -> Marked as UNRESOLVED")
-            
-        else: # unverifiable
-            rule_copy["validation_status"] = "not_validated"
-            rule_copy["new_api"] = "UNRESOLVED: target api could not be verified"
-            rule_copy["description"] = (rule_copy.get("description") or "") + " [Target Verification Failed: target api could not be verified]"
-            print(f"  ⚠️ Unverifiable: {rule_copy.get('old_api')} -> Marked as UNRESOLVED")
+except Exception as exc:
+    print(json.dumps({"environment_status": "install_failed", "details": f"{type(exc).__name__}: {exc}", "rules": []}))
+'''
 
-        validated_rules.append(rule_copy)
+    with tempfile.TemporaryDirectory(prefix="sma-validation-") as tmp:
+        temp_dir = Path(tmp)
+        script_path = temp_dir / "validate.py"
+        rules_path = temp_dir / "rules.json"
 
-    return validated_rules
+        script_path.write_text(worker_script, encoding="utf-8")
+        rules_path.write_text(json.dumps(prepared_rules), encoding="utf-8")
+
+        req_parent = req_file.parent
+        container_req = f"/project/{req_file.name}"
+
+        command = [
+            "docker", "run", "--rm",
+            "-v", f"{req_parent}:/project",
+            "-v", f"{temp_dir}:/work",
+            "-w", "/work",
+            python_image,
+            "python", "/work/validate.py",
+            container_req,
+            pkg_name,
+            json.dumps(all_target_versions),  # Pass full map of all target versions
+            "/work/rules.json",
+        ]
+
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            for rule in prepared_rules:
+                if rule["target_api_status"] == "pending":
+                    rule["target_api_status"] = "probe_failed"
+                    rule["validation_status"] = "unverifiable"
+                    rule["resolution_reason"] = f"Validation timed out after {timeout} seconds"
+            return prepared_rules
+
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout)[-4000:]
+            for rule in prepared_rules:
+                if rule["target_api_status"] == "pending":
+                    rule["target_api_status"] = "probe_failed"
+                    rule["validation_status"] = "unverifiable"
+                    rule["resolution_reason"] = f"Docker validation failed: {details}"
+            return prepared_rules
+
+        try:
+            report = json.loads(result.stdout.strip().splitlines()[-1])
+        except (IndexError, json.JSONDecodeError):
+            for rule in prepared_rules:
+                if rule["target_api_status"] == "pending":
+                    rule["target_api_status"] = "probe_failed"
+                    rule["validation_status"] = "unverifiable"
+                    rule["resolution_reason"] = "Could not parse validation report"
+            return prepared_rules
+
+    environment_status = report.get("environment_status")
+    if environment_status != "ready":
+        details = report.get("details", environment_status)
+        for rule in prepared_rules:
+            if rule["target_api_status"] == "pending":
+                rule["target_api_status"] = "probe_failed"
+                rule["validation_status"] = "unverifiable"
+                rule["resolution_reason"] = str(details)
+        return prepared_rules
+
+    for item in report.get("rules", []):
+        index = item["index"]
+        rule = prepared_rules[index]
+        status = item["status"]
+
+        rule["target_api_status"] = {
+            "exists": "target_api_exists",
+            "missing": "target_api_missing",
+            "unverifiable": "unverifiable",
+        }.get(status, "unverifiable")
+
+        rule["validation_status"] = "validated" if status == "exists" else "unverifiable"
+        rule["resolution_reason"] = item["reason"]
+        rule["environment_status"] = "ready"
+
+    return prepared_rules

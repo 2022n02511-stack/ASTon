@@ -220,10 +220,36 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
         print("⚠️ Warning: No migration rules extracted across the version chain!")
         return [], [], [], "", False
 
+    # print("\n========== STAGE 2 DEBUG ==========")
+
+    # print("\nSTAGE 0 SYMBOLS:")
+    # print(sorted(stage0_symbols))
+
+    # print("\nCOMPOSED RULE COUNT:")
+    # print(len(composed_rules))
+
+    # print("\nCOMPOSED RULE SAMPLE:")
+    # print(json.dumps(composed_rules[:10], indent=2, default=str))
+
+    # print("\nRULE OLD_API VALUES:")
+    # print([
+    #     rule.get("old_api")
+    #     for rule in composed_rules
+    # ])
+
     print("\n==================================================")
     print("--- [Stage 2] Relevance & Completeness Audit ---")
     print("==================================================")
     audit = evaluate_relevance_and_completeness(stage0_symbols, composed_rules, doc_text)
+
+    print("OBSERVED:", sorted(stage0_symbols))
+    print("RELEVANT:", [
+        r["old_api"] for r in audit["relevant_records"]
+    ])
+    print("MISSING:", sorted(audit["missing_symbols"]))
+
+    # print("\nAUDIT RESULT:")
+    # print(json.dumps(audit, indent=2, default=str))
 
     # Generalized replacement for the old hardcoded ".chat.completions.create"
     # suffix check: a scanned symbol isn't "missing a rule" if it already
@@ -245,19 +271,18 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
 
     relevant_rules = audit["relevant_records"]
 
-    another_rules = relevant_rules
+    print(relevant_rules)
 
-    validated_rules = validate_rules_against_target(another_rules)
 
     with open("changes.json", "w") as f:
-        json.dump(validated_rules, f, indent=2)
+        json.dump(relevant_rules, f, indent=2)
     print("📁 Canonical contract saved to changes.json")
 
     print("\n==================================================")
     print("--- [Stage 3] Matching Usages & Patching Code ---")
     print("==================================================")
-    report = man_extract(validated_rules, parses)
+    report = man_extract(relevant_rules, parses)
 
-    print(report, validated_rules, raw_code_examples)
+    print(report, relevant_rules, raw_code_examples)
 
-    return report, validated_rules, raw_code_examples, doc_text, is_genuinely_complete
+    return report, relevant_rules, raw_code_examples, doc_text, is_genuinely_complete
