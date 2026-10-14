@@ -137,54 +137,198 @@ def get_migration_chain(
     return chain
 
 
-def merge_rule_chain(rulesets_in_order: list[list[dict]]) -> list[dict]:
-    """Compose A->B followed by B->C into A->C.
 
-    Rules are copied on input so this function does not mutate caller-owned
-    dictionaries. Carries forward version bounds (from_version, target_version).
+def merge_rule_chain(rulesets_in_order: list[list[dict]]) -> list[dict]:
     """
-    merged: dict[str, dict] = {}
+    Compose migration rules across version boundaries while preserving
+    validation status and unresolved candidates.
+
+    Safety rules:
+    - Never turn None into the literal string "None".
+    - Never compose a rule without a concrete destination.
+    - A composed rule is validated only if every component is validated.
+    - Preserve needs_review candidates for downstream review/patching.
+    - Keep the earliest from_version and latest to_version.
+    """
+    merged: list[dict] = []
+
+    def clean_symbol(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value or None
+
+    def status_of(rule: dict) -> str:
+        status = rule.get("validation_status")
+        # Missing status must not be assumed to mean validated.
+        if status not in {"validated", "needs_review", "rejected"}:
+            return "needs_review"
+        return status
+
+    def has_concrete_target(rule: dict) -> bool:
+        target = clean_symbol(rule.get("new_api"))
+        return bool(
+            target
+            and not target.startswith("UNRESOLVED:")
+        )
+
+    def merge_status(first: dict, second: dict) -> str:
+        statuses = {status_of(first), status_of(second)}
+
+        if "rejected" in statuses:
+            return "rejected"
+
+        if statuses == {"validated"}:
+            return "validated"
+
+        return "needs_review"
 
     for ruleset in rulesets_in_order:
-        step_by_old: dict[str, dict] = {}
-        for incoming in ruleset:
-            old_api = str(incoming.get("old_api", "")).strip()
-            new_api = str(incoming.get("new_api", "")).strip()
-            if old_api and new_api:
-                step_by_old[old_api] = dict(incoming)
+        incoming_rules = []
 
-        consumed: set[str] = set()
+        for source in ruleset:
+            rule = dict(source)
+            old_api = clean_symbol(rule.get("old_api"))
 
-        # Compose all prior paths whose current destination is changed in this step.
-        for old_api, existing in list(merged.items()):
-            current_destination = existing.get("new_api")
-            later = step_by_old.get(current_destination)
-            if later is None:
+            if not old_api:
                 continue
 
-            consumed.add(current_destination)
-            existing["new_api"] = later["new_api"]
+            rule["old_api"] = old_api
+            rule["new_api"] = clean_symbol(rule.get("new_api"))
 
-            # Update fields, ensuring target_version takes the latest boundary
-            for field in ("requires_instantiation", "migration_type", "description", "target_version"):
-                if later.get(field) is not None:
-                    existing[field] = later[field]
-
-            # Preserve earliest from_version, latest target_version
-            if later.get("from_version") and not existing.get("from_version"):
-                existing["from_version"] = later["from_version"]
-
-            # Preserve the earliest before-example; prefer the latest after-example.
-            if not existing.get("example_before") and later.get("example_before"):
-                existing["example_before"] = later["example_before"]
-            if later.get("example_after"):
-                existing["example_after"] = later["example_after"]
-
-        # Add rules that begin in this step.
-        for old_api, incoming in step_by_old.items():
-            if old_api in consumed:
+            if status_of(rule) == "rejected":
                 continue
-            if old_api not in merged:
-                merged[old_api] = dict(incoming)
 
-    return list(merged.values())
+            # Do not treat a missing status as validated.
+            rule["validation_status"] = status_of(rule)
+            incoming_rules.append(rule)
+
+        # Multiple candidates may share an old API. Preserve the candidates
+        # rather than silently selecting one based on input order.
+        step_by_old: dict[str, list[dict]] = {}
+
+        for rule in incoming_rules:
+            step_by_old.setdefault(rule["old_api"], []).append(rule)
+
+        consumed_indices: set[int] = set()
+        next_merged: list[dict] = []
+
+        for existing in merged:
+            destination = clean_symbol(existing.get("new_api"))
+
+            # Unresolved rules cannot be safely composed. Keep them intact.
+            if not destination or destination.startswith("UNRESOLVED:"):
+                next_merged.append(existing)
+                continue
+
+            later_candidates = step_by_old.get(destination, [])
+
+            if not later_candidates:
+                next_merged.append(existing)
+                continue
+
+            # Compose each possible continuation. If several rules propose
+            # different targets, retain each alternative with its own status.
+            for later in later_candidates:
+                composed = dict(existing)
+                composed["new_api"] = later.get("new_api")
+
+                composed["validation_status"] = merge_status(existing, later)
+
+                # Preserve the earliest source version.
+                if not composed.get("from_version"):
+                    composed["from_version"] = later.get("from_version")
+
+                # Carry the latest boundary's target version.
+                if later.get("to_version"):
+                    composed["to_version"] = later["to_version"]
+
+                # Retain both pieces of evidence for auditability.
+                evidence_parts = [
+                    item for item in (
+                        existing.get("evidence"),
+                        later.get("evidence"),
+                    )
+                    if isinstance(item, str) and item.strip()
+                ]
+                if evidence_parts:
+                    composed["evidence"] = "\n\n--- COMPOSED RULE EVIDENCE ---\n\n".join(
+                        dict.fromkeys(evidence_parts)
+                    )
+
+                source_urls = [
+                    item for item in (
+                        existing.get("source_url"),
+                        later.get("source_url"),
+                    )
+                    if isinstance(item, str) and item.strip()
+                ]
+                if source_urls:
+                    composed["source_url"] = " | ".join(
+                        dict.fromkeys(source_urls)
+                    )
+
+                # Later transformation requirements may add structural steps.
+                if later.get("requires_instantiation") is True:
+                    composed["requires_instantiation"] = True
+                elif (
+                    composed.get("requires_instantiation") is None
+                    and later.get("requires_instantiation") is not None
+                ):
+                    composed["requires_instantiation"] = (
+                        later["requires_instantiation"]
+                    )
+
+                if later.get("migration_type"):
+                    composed["migration_type"] = later["migration_type"]
+
+                if later.get("description"):
+                    previous_description = composed.get("description")
+                    if (
+                        previous_description
+                        and previous_description != later["description"]
+                    ):
+                        composed["description"] = (
+                            f"{previous_description}\n"
+                            f"Later boundary transformation: "
+                            f"{later['description']}"
+                        )
+                    else:
+                        composed["description"] = later["description"]
+
+                if not composed.get("example_before") and later.get("example_before"):
+                    composed["example_before"] = later["example_before"]
+
+                if later.get("example_after"):
+                    composed["example_after"] = later["example_after"]
+
+                next_merged.append(composed)
+
+            # Mark these intermediate rules as consumed by composition.
+            for index, candidate in enumerate(incoming_rules):
+                if candidate in later_candidates:
+                    consumed_indices.add(index)
+
+        # Add rules not used as intermediate steps. This also preserves
+        # unresolved candidates whose replacement is missing.
+        existing_old_apis = {rule["old_api"] for rule in next_merged}
+
+        for index, rule in enumerate(incoming_rules):
+            if index in consumed_indices:
+                continue
+
+            # Preserve a distinct candidate even if another rule has the
+            # same old API. Avoid exact duplicates only.
+            duplicate = any(
+                existing.get("old_api") == rule.get("old_api")
+                and existing.get("new_api") == rule.get("new_api")
+                and existing.get("validation_status") == rule.get("validation_status")
+                for existing in next_merged
+            )
+
+            if not duplicate:
+                next_merged.append(dict(rule))
+
+        merged = next_merged
+
+    return merged

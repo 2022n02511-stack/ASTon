@@ -52,44 +52,52 @@ def stage0(package_name: str, parses: list[dict]) -> set[str]:
     return dynamic_stage0_symbols
 
 
-def man_extract(rules: list, parses: list[dict]) -> list[dict]:
-    """
-    Maps extracted LLM rules against actual AST parser output.
 
-    FIXED: previously called parser() again internally, re-walking the file
-    with libcst+jedi a second time even though pipeline.py already has the
-    parse result and passes it through stage0(). Now accepts the existing
-    parse instead of recomputing it.
-    """
-    extracted = {}
+def man_extract(rules: list, parses: list[dict]) -> list[dict]:
+    """Match AST usages to all relevant migration candidates without
+    dropping candidate status, evidence, or alternative replacements."""
+
+    from collections import defaultdict
+
+    extracted = defaultdict(list)
+
     for rule in rules:
-        extracted[(rule["package"], rule["old_api"])] = {
-            "new_api": rule["new_api"],
-            "requires_instantiation": rule.get("requires_instantiation"),
-        }
+        package = rule.get("package")
+        old_api = rule.get("old_api")
+
+        if not package or not old_api:
+            continue
+
+        # Preserve every candidate for the same old API.
+        extracted[(package, old_api)].append(dict(rule))
 
     report = []
     filename = Path("before.py").name
 
     for parse in parses:
         canonical_usage = canonicalize_usage(parse)
-        key = (parse["package"], canonical_usage)
-        if key not in extracted:
+        key = (parse.get("package"), canonical_usage)
+        candidates = extracted.get(key)
+
+        if not candidates:
             continue
 
         report.append({
             "file_name": filename,
-            "Line": parse["line"],
-            "alias": parse["local_alias"],
-            "package": parse["package"],
-            "detected_usage": parse["api_usage"],
+            "Line": parse.get("line"),
+            "alias": parse.get("local_alias"),
+            "package": parse.get("package"),
+            "detected_usage": parse.get("api_usage"),
             "canonical_usage": canonical_usage,
-            "instance": parse["instance"],  # fixed typo: was "instnace"
-            "kwargs": parse["kwargs"],
-            "change": extracted[key],
+            "instance": parse.get("instance"),
+            "kwargs": parse.get("kwargs"),
+            "change": {
+                "candidates": candidates,
+            },
         })
 
     return report
+
 
 
 def code_patcher(
@@ -215,6 +223,14 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
         pkg_name, current_version=current_version,
         target_version=target_version, stage0_symbols=stage0_symbols,
     )
+
+    for rule in composed_rules:
+        old_api = str(rule.get("old_api", "")).lower()
+        if "proxy" in old_api or "api_key" in old_api:
+            print(
+                "CONFIG CANDIDATE:",
+                json.dumps(rule, indent=2, default=str),
+            )
 
     if not composed_rules:
         print("⚠️ Warning: No migration rules extracted across the version chain!")

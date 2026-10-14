@@ -5,12 +5,21 @@ from aston.scanner import parser
 from pathlib import Path
 import json
 from aston.rule_validation import validate_rules_against_target, validate_all_rules, reconcile_report
+from uuid import uuid4
+from pathlib import Path
+from aston.artifacts.save_attempt import save_code
 
 
 def run_for_repo(path: str):
     # FIXED: previously read unconditionally — crashed on a clean checkout
     # with no repair history yet. Only needed once something is actually
     # in repair mode.
+
+    run_id = uuid4().hex[:12]
+
+    run_dir = Path("aston/artifacts") / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
     rep_con = None
     repair_context_path = Path("repair_context.txt")
     if repair_context_path.exists():
@@ -129,6 +138,17 @@ def run_for_repo(path: str):
     print("\n========== ALL VALIDATED RULES (WITH STATUSES) SENT TO PATCHER ==========")
     print(json.dumps(validated_all_rules_dict, indent=2, default=str))
 
+    original_source = None
+
+    with open('before.py', 'r') as f:
+        original_source = f.read()
+
+    save_code(run_dir / "original.py", original_source)
+
+    MAX_RETRIES = 3
+    retry_count = 0
+    previous_attempts = []
+
     factored_code = code_patcher(
         "before.py",
         all_reports,
@@ -139,10 +159,8 @@ def run_for_repo(path: str):
         raw_code_examples=raw_code_examples,
     )
 
-    if factored_code:
-        MAX_RETRIES = 3
-        retry_count = 0
-        previous_attempts = []
+    save_code(run_dir / "first_attempt.py", factored_code)
+
 
     temp_req_path = Path("temp_requirements.txt")
     original_req_path = Path(path) / "requirements.txt"
@@ -174,7 +192,14 @@ def run_for_repo(path: str):
     while pr.status == VerificationResult.MIGRATION_ERROR and retry_count < MAX_RETRIES:
         retry_count += 1
 
+
         failed_source = Path(pr.target_file).read_text()
+
+        # save_code(
+        #         run_dir / f"repaired_attempt_{retry_count}.py",
+        #         failed_source,
+        # )
+
         previous_attempts.append({
             "attempt": retry_count,
             "source_code": failed_source,
@@ -206,14 +231,23 @@ def run_for_repo(path: str):
             raw_code_examples=raw_code_examples,
         )
 
-        current_source = Path("before.py").read_text()
-        if current_source == failed_source:
-            print("❌ Repair produced no new source. Stopping.")
+        if not factored_code or factored_code == failed_source:
+            print("❌ Repair returned no new source. Stopping.")
             break
+
+# Preserve the output of this repair attempt.
+        save_code(
+            run_dir / f"repaired_attempt_{retry_count}.py",
+            factored_code,
+        )
+
+        Path("before.py").write_text(factored_code, encoding="utf-8")
+
 
         pr = verify_single_file_in_docker("before.py", temp_req_path)
 
     if pr.status == VerificationResult.PASS:
+        save_code(run_dir / "final.py", Path("before.py").read_text())
         print("\n✅ Sandboxed Verification Successful!")
         yes_no = input("Do you wanna patch it? [Y/n]: ").strip().lower()
         if yes_no in ["y", "yes", ""]:

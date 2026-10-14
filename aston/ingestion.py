@@ -37,16 +37,14 @@ CACHE_DIR = Path(".sma/rule_cache_v4")
 class MigrationRule(BaseModel):
     package: str
     old_api: str
-    new_api: str
+    new_api: str | None = None
     requires_instantiation: bool | None = None
     migration_type: str | None = None
     description: str | None = None
-    from_version: str 
+    from_version: str
     to_version: str
     example_before: str | None = None
     example_after: str | None = None
-    # Added by the validation pass below — None for rules that, for any
-    # reason, bypass validation (should not happen in normal operation).
     evidence: str | None = None
     source_url: str | None = None
     validation_status: str | None = None
@@ -82,6 +80,32 @@ For every rule:
   the change is a trivial rename with nothing else to explain.
 - example_before / example_after: only minimal snippets explicitly shown in
   the source for this specific rule. Otherwise null.
+
+### Migration candidate coverage requirements
+
+Extract each distinct documented breaking change relevant to the package, including:
+
+- API renames and removals.
+- Changes to function signatures and required arguments.
+- Configuration property changes.
+- Module-level configuration that moves to client-instance configuration.
+- Client initialization and transport changes.
+- Authentication and credential configuration changes.
+- Changes that require multiple coordinated code edits.
+- Documented removals for which no direct replacement is provided.
+
+For each candidate, preserve the original API symbol, source URL, supporting evidence, applicable version boundary, migration type, and any documented replacement.
+
+Do not omit a relevant breaking change solely because its replacement is unknown or because it requires manual migration.
+
+When no replacement is established by the source, use a null replacement and mark the candidate as needs_review or unresolved according to the output schema. Explain what is known, what remains uncertain, and which source supports the change.
+
+Do not invent a replacement API, infer a direct rename from similar names, or classify a configuration migration as a simple rename without supporting evidence.
+
+Return distinct candidates for distinct migration strategies rather than silently overwriting competing candidates for the same old API.
+
+The goal is to preserve relevant migration opportunities for downstream analysis, not to claim every candidate is automatically transformable.
+  
 
 Also return raw_example_blocks: full, distinct before/after migration examples
 copied verbatim from the supplied documentation. Do not complete or invent code.
@@ -184,6 +208,26 @@ Rules:
 13. If the old API was removed without a confirmed replacement, do not
     invent new_api. Use null.
 14. Keep every input rule in the output for auditability.
+
+### Validation policy
+
+Evaluate each migration candidate independently.
+
+- `validated` means the proposed migration is supported by the supplied source evidence and the candidate contains a concrete, sufficiently supported replacement.
+- `needs_review` means the candidate may represent a real breaking change, but its replacement, evidence, migration strategy, or applicability is not sufficiently established.
+- `rejected` means the candidate is demonstrably invalid, contradicted by reliable supplied evidence, or not actually supported as a migration claim. Do not use rejected merely because a replacement is unknown.
+
+A missing replacement is not, by itself, grounds for rejection. Preserve documented removals and configuration changes that require further investigation as needs_review.
+
+Do not invent source URLs, quotations, version boundaries, API names, or migration examples. Preserve the original evidence and source metadata where possible.
+
+Distinguish API existence from migration correctness. A target API existing does not establish that a proposed transformation preserves behavior.
+
+Do not omit input candidates. Return one result per input candidate, preserving the original old_api and package identity. If uncertain, mark needs_review rather than dropping the candidate.
+
+Do not label a rule validated solely because its proposed replacement looks plausible.
+
+
 """
 
 
@@ -206,15 +250,58 @@ def validate_and_normalize_rules(
     source_evidence: str = "",
 ) -> list[dict]:
     """
-    Validate and normalize extracted migration rules. Only rules with
-    validated status, a concrete migration, and supporting evidence that is
-    actually present in source_evidence are returned.
+    Validate extracted rules while preserving unresolved candidates.
+
+    validation_status:
+        validated   -> passed the available validation checks
+        needs_review -> retained, but not established as safe
+        rejected    -> excluded from downstream migration candidates
     """
     if not rules:
         print("⚠️ Rule validation skipped: no extracted rules.")
         return []
+
     if not client:
-        raise RuntimeError("MISTRAL_API_KEY is not set; cannot validate migration rules.")
+        raise RuntimeError(
+            "MISTRAL_API_KEY is not set; cannot validate migration rules."
+        )
+
+    def preserve_for_review(
+        source_rules: list[dict],
+        reason: str,
+    ) -> list[dict]:
+        """Retain candidates when validation cannot establish trust."""
+        preserved = []
+
+        for source_rule in source_rules:
+            rule = dict(source_rule)
+
+            if rule.get("validation_status") == "rejected":
+                continue
+
+            rule["package"] = package
+            rule["old_api"] = str(rule.get("old_api") or "").strip()
+            new_api = rule.get("new_api")
+            rule["new_api"] = (
+                new_api.strip()
+                if isinstance(new_api, str) and new_api.strip()
+                else None
+            )
+            rule["validation_status"] = "needs_review"
+
+            existing_description = rule.get("description")
+            note = f"Validation could not establish trust: {reason}"
+            rule["description"] = (
+                f"{existing_description.strip()} {note}"
+                if isinstance(existing_description, str)
+                and existing_description.strip()
+                else note
+            )
+
+            if rule["old_api"]:
+                preserved.append(rule)
+
+        return preserved
 
     user_prompt = f"""
 PACKAGE: {package}
@@ -232,89 +319,169 @@ SOURCE MIGRATION DOCUMENTATION:
 
 Validate every rule against the available source evidence.
 Preserve original evidence and source URLs. Do not invent either.
+Keep every input rule in the output for auditability.
 """
 
     try:
         response = client.chat.parse(
             model="codestral-latest",
             messages=[
-                {"role": "system", "content": VALIDATOR_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
+                {
+                    "role": "system",
+                    "content": VALIDATOR_SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt,
+                },
             ],
             response_format=ValidatedRuleset,
             temperature=0,
         )
+
         parsed = response.choices[0].message.parsed
+
         if parsed is None:
-            print("❌ Rule validation returned no parsed result.")
-            return []
+            print(
+                "⚠️ Validator returned no parsed result; "
+                "preserving candidates as needs_review."
+            )
+            return preserve_for_review(
+                rules,
+                "the validator returned no parsed result",
+            )
 
         accepted = []
         needs_review = 0
         rejected = 0
 
-        for rule in parsed.rules:
-            if check_rename_contradiction(rule.model_dump()):
-                print(f"⚠️ Contradiction: '{rule.old_api}' classified as rename but "
-                    f"description implies structural change — downgrading to needs_review")
-                needs_review += 1
-                continue
+        normalized_source = normalize_evidence_text(source_evidence)
 
-            if rule.validation_status == "rejected":
+        for validated_rule in parsed.rules:
+            rule = validated_rule.model_dump()
+
+            old_api = normalize_rule_symbols([
+                {"old_api": rule.get("old_api", "")}
+            ])[0]["old_api"]
+
+            new_api = rule.get("new_api")
+            if isinstance(new_api, str):
+                new_api = new_api.strip() or None
+
+            status = rule.get("validation_status")
+
+            # Explicit rejection remains a rejection.
+            if status == "rejected":
                 rejected += 1
                 continue
-            if rule.validation_status == "needs_review":
-                needs_review += 1
-                continue
-            if rule.migration_type in {"removal", "manual"}:
-                needs_review += 1
-                continue
-            if not rule.new_api or not rule.new_api.strip():
-                needs_review += 1
-                continue
 
-            # The check that actually matters: does the claimed evidence
-            # literally appear in the real source text, or is it invented?
-            normalized_evidence = normalize_evidence_text(rule.evidence or "")
-            normalized_source = normalize_evidence_text(source_evidence)
+            # Unknown statuses must never be treated as validated.
+            if status not in {"validated", "needs_review"}:
+                status = "needs_review"
+
+            # Keep original source evidence only when supplied.
+            evidence = rule.get("evidence")
+            normalized_evidence = normalize_evidence_text(evidence or "")
+
             evidence_is_grounded = bool(
                 normalized_evidence
                 and normalized_source
                 and normalized_evidence in normalized_source
             )
 
-            if not evidence_is_grounded:
-                print(f"⚠️ Evidence mismatch, dropping rule: {rule.old_api} -> {rule.new_api}")
-                print(f"   Evidence claimed: {rule.evidence!r}")
-                needs_review += 1
-                continue
+            reasons = []
 
-            accepted.append({
+            # Deterministic safeguard for contradictory rename descriptions.
+            if check_rename_contradiction(rule):
+                reasons.append(
+                    "The rule is classified as a rename, but its description "
+                    "suggests a structural or configuration change."
+                )
+
+            if not evidence_is_grounded:
+                reasons.append(
+                    "The supplied evidence could not be verified against "
+                    "the source documentation."
+                )
+
+            if rule.get("migration_type") in {"removal", "manual"}:
+                reasons.append(
+                    "This migration type requires manual handling."
+                )
+
+            if not new_api:
+                reasons.append(
+                    "No concrete replacement API has been established."
+                )
+
+            # A model's validated label cannot override deterministic checks.
+            if reasons:
+                status = "needs_review"
+
+            if status == "needs_review":
+                needs_review += 1
+            else:
+                # At this point, status is validated and the deterministic
+                # evidence, replacement, and contradiction checks passed.
+                pass
+
+            normalized_rule = {
                 "package": package,
-                "old_api": rule.old_api.strip(),
-                "new_api": rule.new_api.strip(),
-                "migration_type": rule.migration_type,
-                "requires_instantiation": rule.requires_instantiation,
-                "description": rule.description.strip() if rule.description else None,
-                "from_version": rule.from_version,
-                "to_version": rule.to_version,
-                "evidence": rule.evidence,
-                "source_url": rule.source_url,
-                "validation_status": "validated",
-            })
+                "old_api": old_api,
+                "new_api": new_api,
+                "migration_type": rule.get("migration_type"),
+                "requires_instantiation": rule.get(
+                    "requires_instantiation"
+                ),
+                "description": rule.get("description"),
+                "from_version": rule.get("from_version") or current_version,
+                "to_version": rule.get("to_version") or target_version,
+                "evidence": evidence,
+                "source_url": rule.get("source_url"),
+                "validation_status": status,
+            }
+
+            if reasons:
+                existing = normalized_rule.get("description") or ""
+                normalized_rule["description"] = (
+                    f"{existing}\nValidation concerns: "
+                    + " ".join(reasons)
+                ).strip()
+
+            if old_api:
+                accepted.append(normalized_rule)
 
         print("\n========== Rule Validation Summary ==========")
         print(f"Candidate rules: {len(rules)}")
-        print(f"Validated and accepted: {len(accepted)}")
-        print(f"Needs review / insufficient evidence: {needs_review}")
+        print(
+            "Validated:",
+            sum(
+                r["validation_status"] == "validated"
+                for r in accepted
+            ),
+        )
+        print(
+            "Needs review:",
+            sum(
+                r["validation_status"] == "needs_review"
+                for r in accepted
+            ),
+        )
         print(f"Rejected: {rejected}")
         print("==============================================\n")
 
         return accepted
 
     except Exception as exc:
-        print(f"❌ Rule validation failed: {exc}")
-        return []
+        print(f"⚠️ Rule validation failed: {exc}")
+        print(
+            "Preserving extracted candidates as needs_review; "
+            "none will be marked validated by this fallback."
+        )
+        return preserve_for_review(
+            rules,
+            f"validator failure: {type(exc).__name__}: {exc}",
+        )
 
 
 # --- Extraction (unvalidated) -----------------------------------------------
@@ -328,7 +495,7 @@ def _github_headers() -> dict[str, str]:
         headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
     return headers
 
-EXTRACTION_SCHEMA_VERSION = "v3-validated-with-statuses-7"
+EXTRACTION_SCHEMA_VERSION = "v4-preserve-review-candidates-1"
 
 def _cache_path(package: str, tag: str, doc_text: str, stage0_symbols: set[str]) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -723,7 +890,20 @@ def run_stage1_pipeline(
                 "code": block,
             })
 
-        print(f"  └─ Processed {len(ruleset.rules)} VALIDATED rules for {tag}")
+        validated_count = sum(
+            rule.validation_status == "validated"
+            for rule in ruleset.rules
+        )
+
+        review_count = sum(
+            rule.validation_status == "needs_review"
+            for rule in ruleset.rules
+        )
+
+        print(
+            f"  └─ Processed {len(ruleset.rules)} candidates for {tag}: "
+            f"{validated_count} validated, {review_count} needs_review"
+        )
 
     if unresolved_boundaries:
         print("⚠️ Unresolved documentation boundaries: " + ", ".join(unresolved_boundaries))

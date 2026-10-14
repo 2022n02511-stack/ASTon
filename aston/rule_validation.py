@@ -18,6 +18,7 @@ def validate_all_rules(
         package = rule.get("package")
         if not package:
             rule.setdefault("target_api_status", "unprobed")
+            rule.setdefault("validation_status", "not_validated")
             rule.setdefault("resolution_reason", "Rule has no package identifier")
             continue
 
@@ -43,6 +44,13 @@ def validate_all_rules(
             all_target_versions=all_target_versions,
             req_file=req_file,
             distribution_name=distribution_names.get(package),
+        )
+
+        if len(validated) != len(indexed_rules):
+            raise RuntimeError(
+                f"Rule validator returned {len(validated)} rules for "
+                f"{len(indexed_rules)} inputs for {package}=={target_version}. "
+                "Refusing to silently pass unvalidated rules downstream."
         )
 
         for (original_index, _), validated_rule in zip(indexed_rules, validated):
@@ -293,7 +301,24 @@ except Exception as exc:
             "unverifiable": "unverifiable",
         }.get(status, "unverifiable")
 
-        rule["validation_status"] = "validated" if status == "exists" else "unverifiable"
+        # Preserve the ingestion-stage assessment. A successful attribute probe
+# proves only that the target exists, not that the migration is correct.
+        documentation_status = rule.get("validation_status")
+
+        if status == "exists":
+            rule["target_api_status"] = "target_api_exists"
+
+            if documentation_status == "validated":
+                rule["validation_status"] = "validated"
+            else:
+                rule["validation_status"] = documentation_status or "needs_review"
+
+        else:
+            rule["validation_status"] = (
+                "needs_review"
+                if documentation_status == "validated"
+                else documentation_status or "needs_review"
+        )
         rule["resolution_reason"] = item["reason"]
         rule["environment_status"] = "ready"
 

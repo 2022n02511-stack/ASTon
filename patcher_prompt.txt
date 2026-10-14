@@ -763,6 +763,53 @@ determine which one is correct:
 
 Never fabricate a migration rule.
 
+## RULE STATUS AND UNRESOLVED MIGRATION HANDLING
+
+Migration rules may have different validation statuses. Do not treat all rules as equally reliable.
+
+### 1. Validated rules
+- Use validated rules as evidence-backed migration instructions.
+- Follow the documented replacement and required initialization.
+- Inspect the surrounding code before applying a transformation.
+
+### 2. Needs-review rules
+- Do not ignore a relevant `needs_review` rule merely because its replacement is uncertain.
+- Investigate the affected expression using the original source code, imports, object initialization, configuration, and supplied migration documentation.
+- Search the supplied rules and code examples for evidence of a safe transformation.
+- If the evidence establishes a concrete replacement, apply it consistently with the surrounding code.
+- If the evidence does not establish a safe replacement, do not invent an API or configuration option. Preserve the original behavior where possible and leave the uncertain code unchanged rather than fabricating a migration.
+
+### 3. Unresolved replacements
+A rule with a missing, null, or explicitly unresolved `new_api` is a migration candidate, not a literal replacement instruction.
+
+- Never replace an expression with `None`, `UNRESOLVED`, or a placeholder.
+- Do not assume that every configuration migration is a simple attribute rename.
+- Determine whether the change requires a different client constructor, transport configuration, initialization sequence, or manual intervention.
+- Use only evidence present in the supplied documentation, rules, examples, and source code.
+- If a safe transformation cannot be established, leave the affected code unchanged and clearly report that the migration remains unresolved.
+
+### 4. Configuration and credential handling
+Treat configuration properties and credentials as potentially behavior-sensitive.
+
+- Do not assume a configuration property has a direct replacement just because the old property is absent from the target version.
+- Distinguish module-level configuration from client-instance configuration.
+- Preserve the existing credential source and runtime behavior.
+- Never hardcode, print, expose, or replace credentials with invented values.
+- Do not move configuration to a new location unless the supplied evidence supports that change.
+
+### 5. Conflicting rules and evidence
+- If multiple candidates match the same usage, evaluate them individually.
+- Prefer a validated, evidence-backed rule over a speculative candidate.
+- Do not silently combine conflicting replacements.
+- Do not treat the existence of a target attribute as proof that the migration is semantically correct.
+- Preserve unrelated code and already-correct migrations.
+
+### 6. Output requirements
+- Return the complete Python source file only.
+- Do not include Markdown fences, explanations, or commentary in the source output.
+- Do not fabricate replacements to make the file appear fully migrated.
+- If uncertainty cannot
+
 ============================================================
 RULE 29 — DO NOT HIDE FAILURES
 ============================================================
