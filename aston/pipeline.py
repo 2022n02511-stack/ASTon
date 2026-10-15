@@ -8,12 +8,15 @@ from aston.rule_validation import validate_rules_against_target, validate_all_ru
 from uuid import uuid4
 from pathlib import Path
 from aston.artifacts.save_attempt import save_code
+from aston.cli_ui.rich import print_rich_aston_banner, run_with_animation, print_aston_banner
 
 
 def run_for_repo(path: str):
     # FIXED: previously read unconditionally — crashed on a clean checkout
     # with no repair history yet. Only needed once something is actually
     # in repair mode.
+
+    print_aston_banner()
 
     run_id = uuid4().hex[:12]
 
@@ -55,13 +58,14 @@ def run_for_repo(path: str):
     for change in breaking_changes:
         stage0_symbols = stage0(change["pkg_name"], parses)
 
-        report, relevant_rules, raw_code, doc_text, is_complete = scraper(
+        report, relevant_rules, raw_code, doc_text, is_complete = run_with_animation(
+            "Ingesting multi-boundary migration chain from GitHub...",
+            scraper,
             change["pkg_name"],
             change["current_version"],
             change["target_version"],
             stage0_symbols,
-            parses,  # FIXED: thread the existing parse through instead of
-                     # letting man_extract() re-parse the file internally
+            parses
         )
 
         if not is_complete:
@@ -105,7 +109,9 @@ def run_for_repo(path: str):
             rule.setdefault("package", pkg)
             flat_all_rules.append(rule)
 
-    validated_rules = validate_all_rules(
+    validated_rules = run_with_animation(
+        "Running sandboxed batch validation across target environments...",
+        validate_all_rules,
         all_rules=flat_all_rules,
         all_target_versions=all_tar_vers,
         req_file=Path(path) / "requirements.txt",
