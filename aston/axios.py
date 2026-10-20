@@ -236,22 +236,22 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
         print("⚠️ Warning: No migration rules extracted across the version chain!")
         return [], [], [], "", False
 
-    # print("\n========== STAGE 2 DEBUG ==========")
+    print("\n========== STAGE 2 DEBUG ==========")
 
-    # print("\nSTAGE 0 SYMBOLS:")
-    # print(sorted(stage0_symbols))
+    print("\nSTAGE 0 SYMBOLS:")
+    print(sorted(stage0_symbols))
 
-    # print("\nCOMPOSED RULE COUNT:")
-    # print(len(composed_rules))
+    print("\nCOMPOSED RULE COUNT:")
+    print(len(composed_rules))
 
-    # print("\nCOMPOSED RULE SAMPLE:")
-    # print(json.dumps(composed_rules[:10], indent=2, default=str))
+    print("\nCOMPOSED RULE SAMPLE:")
+    print(json.dumps(composed_rules[:10], indent=2, default=str))
 
-    # print("\nRULE OLD_API VALUES:")
-    # print([
-    #     rule.get("old_api")
-    #     for rule in composed_rules
-    # ])
+    print("\nRULE OLD_API VALUES:")
+    print([
+        rule.get("old_api")
+        for rule in composed_rules
+    ])
 
     print("\n==================================================")
     print("--- [Stage 2] Relevance & Completeness Audit ---")
@@ -264,12 +264,13 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
     ])
     print("MISSING:", sorted(audit["missing_symbols"]))
 
-    # print("\nAUDIT RESULT:")
-    # print(json.dumps(audit, indent=2, default=str))
+    print("\nAUDIT RESULT:")
+    print(json.dumps(audit, indent=2, default=str))
 
     # Generalized replacement for the old hardcoded ".chat.completions.create"
     # suffix check: a scanned symbol isn't "missing a rule" if it already
     # matches some rule's new_api — it's already migrated, not unmigrated.
+
     already_migrated_targets = {
         r.get("new_api") for r in composed_rules if r.get("new_api")
     }
@@ -287,7 +288,7 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
 
     relevant_rules = audit["relevant_records"]
 
-    print(relevant_rules)
+    # print(relevant_rules)
 
 
     with open("changes.json", "w") as f:

@@ -1,14 +1,13 @@
 import os
-from openai import OpenAI
+import openai
 import requests
 
-# 1. Non-call property and error references
-api_key = os.environ.get("OPENAI_API_KEY")
-base_url = os.environ.get("OPENAI_BASE_URL")
-proxy_setting = os.environ.get("OPENAI_PROXIES")
+# 1. Global module configuration (no client instantiation in v0.x)
+openai.api_key = os.getenv("OPENAI_API_KEY", "test-api-key")
+openai.base_url = "https://api.openai.com/v1"
 
-# 2. Legacy OpenAI call (v0.28.1 style)
-client = OpenAI(api_key=api_key, base_url=base_url)
+# 2. Legacy OpenAI call (using flat module-level static method)
+client = openai.OpenAI()
 response = client.chat.completions.create(
     model="gpt-3.5-turbo",
     messages=[
@@ -16,13 +15,14 @@ response = client.chat.completions.create(
     ]
 )
 
-# 3. Standard requests library usage (second module)
+print(response.choices[0].message.content)
+
+# 3. Standard requests library usage — remains unchanged
 api_response = requests.get("https://httpbin.org/get")
 print(api_response.status_code)
 
-# 4. Error handling reference
+# 4. Legacy error handling reference (errors live under openai.error)
 try:
-    from openai import BadRequestError
-    err_class = BadRequestError
+    err_class = openai.error.InvalidRequestError
 except Exception:
     pass

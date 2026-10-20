@@ -124,7 +124,7 @@ def run_for_repo(path: str):
 
     with open("changes.json", "w") as f:
         json.dump(final_report_dict, f, indent=2)
-    print("📁 Canonical audit contract saved to changes.json")
+        print("📁 Canonical audit contract saved to changes.json")
 
     # 4. Rebuild the package-keyed dictionary with ALL validated rules (keeping statuses)
     validated_all_rules_dict = {}

@@ -60,50 +60,70 @@ def determine_expected_affected_symbols(
 
 
 
+
 def evaluate_relevance_and_completeness(
     stage0_symbols: set[str],
     extracted_records: list[dict],
     migration_doc_text: str,
 ) -> dict:
     observed_symbols = {
-        normalize_api_symbol(s)
-        for s in stage0_symbols
-        if normalize_api_symbol(s)
+        normalize_api_symbol(symbol)
+        for symbol in stage0_symbols
+        if normalize_api_symbol(symbol)
     }
 
-    old_to_new = {}
+    # Index rules by their old and target APIs.
+    old_to_records = {}
+    known_target_apis = set()
+
     for record in extracted_records:
         old_api = normalize_api_symbol(record.get("old_api", ""))
         new_api = normalize_api_symbol(record.get("new_api", ""))
 
         if old_api:
-            old_to_new.setdefault(old_api, []).append(new_api)
+            old_to_records.setdefault(old_api, []).append(record)
 
-    known_old_apis = set(old_to_new)
-    known_target_apis = {
-        target
-        for targets in old_to_new.values()
-        for target in targets
-        if target
-    }
+        if new_api:
+            known_target_apis.add(new_api)
 
-    relevant_records = [
-        {
-            **record,
-            "old_api": normalize_api_symbol(record.get("old_api", "")),
-        }
-        for record in extracted_records
-        if normalize_api_symbol(record.get("old_api", ""))
-        in observed_symbols
-    ]
+    known_old_apis = set(old_to_records)
 
-    # Observed symbols already recognized as migration targets are not
-    # missing old-API rules.
-    unresolved_symbols = observed_symbols - known_old_apis - known_target_apis
+    # Directly applicable candidates: observed source symbol matches
+    # the old API of an extracted migration rule.
+    relevant_records = []
+    directly_covered_symbols = set()
+
+    for symbol in observed_symbols:
+        for record in old_to_records.get(symbol, []):
+            relevant_records.append({
+                **record,
+                "old_api": normalize_api_symbol(
+                    record.get("old_api", "")
+                ),
+            })
+            directly_covered_symbols.add(symbol)
+
+    # Symbols already recognized as migration targets are not missing
+    # old-API rules.
+    already_target_symbols = observed_symbols & known_target_apis
+
+    # Keep these separate: not finding a rule does not prove that a
+    # symbol needs migration.
+    unclassified_symbols = (
+        observed_symbols
+        - directly_covered_symbols
+        - already_target_symbols
+    )
 
     return {
-        "is_complete": not unresolved_symbols,
+        # This is coverage completeness, not proof that the entire
+        # migration is safe or validated.
+        "is_complete": not unclassified_symbols,
         "expected_affected_symbols": sorted(observed_symbols),
-        "missing_symbols": sorted(unresolved_symbols),
+        "missing_symbols": sorted(unclassified_symbols),
         "relevant_records": relevant_records,
+        "directly_covered_symbols": sorted(directly_covered_symbols),
+        "already_target_symbols": sorted(already_target_symbols),
+        "unclassified_symbols": sorted(unclassified_symbols),
     }
+
