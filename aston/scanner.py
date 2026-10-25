@@ -12,17 +12,24 @@ from typing import Sequence
 class Tracker(VisitorMetadataProvider):
     METADATA_DEPENDENCIES = (PositionProvider, ParentNodeProvider)
 
-    def __init__(self, code_text: str):
+    def __init__(self, code_text: str, file_path: Path | None = None, project: jedi.Project | None = None):
         super().__init__()
         self.code_text = code_text
         self.code_lines = code_text.splitlines()
-        self.jedi_script = jedi.Script(code_text)
+        self.file_path = file_path
+        self.project = project
+        self._jedi_script = None  # Lazy loaded
         
-        # State Registries
-        self.imports = {}    # local_alias -> package
-        self.instances = {}  # instance_var -> {"class_alias": ..., "statement": ...}
+        self.imports = {}    
+        self.instances = {}  
         self.results = []
-        self._recorded_usages = set()  # Deduplication registry (line, api_usage)
+        self._recorded_usages = set()
+
+    @property
+    def jedi_script(self):
+        if self._jedi_script is None:
+            self._jedi_script = jedi.Script(self.code_text)
+        return self._jedi_script
 
     def _get_root_name(self, node) -> str | None:
         curr = node
@@ -187,7 +194,7 @@ class Tracker(VisitorMetadataProvider):
              
 
 
-def parser(path: str):
+def parser(path: str | Path, project: jedi.Project | None = None):
     path = Path(path)
     if not path.exists():
         path = Path("before.py")
@@ -195,11 +202,9 @@ def parser(path: str):
     code_text = path.read_text(encoding="utf-8")
     module = cst.parse_module(code_text)
 
-    visitor = Tracker(code_text)
+    visitor = Tracker(code_text, file_path=path, project=project)
     wrapper = MetadataWrapper(module)
     wrapper.visit(visitor)
-
-    # print(json.dumps(visitor.results, indent=3))
 
     return visitor.results
 
