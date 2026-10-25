@@ -7,6 +7,7 @@ from libcst import matchers as m
 import json
 import jedi
 from typing import Sequence
+import hashlib
 
 class Tracker(VisitorMetadataProvider):
     METADATA_DEPENDENCIES = (PositionProvider, ParentNodeProvider)
@@ -82,7 +83,7 @@ class Tracker(VisitorMetadataProvider):
             "line_start": pos.start.line,
             "line_end": pos.end.line,
             "parameters": params,
-            "reach": "unreached",
+            "reach": "unknown",  # Updated from "unreached" to "unknown"
             "watched_usage_ids": []
         }
         self.scope_stack.append(func_name)
@@ -168,19 +169,30 @@ class Tracker(VisitorMetadataProvider):
              
 
 
-def parser(path: str | Path, project: jedi.Project | None = None):
+def parser(path: str | Path, relative_path: str, project: jedi.Project | None = None):
+
     path = Path(path)
     if not path.exists():
         path = Path("before.py")
 
     code_text = path.read_text(encoding="utf-8")
+    file_hash = hashlib.sha256(code_text.encode("utf-8")).hexdigest()
+    
     module = cst.parse_module(code_text)
-
-    visitor = Tracker(code_text, file_path=path, project=project)
+    visitor = Tracker(relative_path=relative_path, code_text=code_text, file_path=path)
     wrapper = MetadataWrapper(module)
     wrapper.visit(visitor)
 
-    return visitor.results
-
+    return {
+        "file_meta": {
+            "path": relative_path,
+            "sha256": file_hash,
+            "parse_status": "success"
+        },
+        "usages": visitor.usages,
+        "imports": visitor.imports,
+        "symbols": visitor.symbols,
+        "diagnostics": [] # File-specific diagnostics if any
+    }
 
 # parser()

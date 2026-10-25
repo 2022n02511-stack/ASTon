@@ -1,63 +1,56 @@
 from pathlib import Path
+from aston.scanner import parser
 from aston.watcher import watcher
+import json
 
 def repo_map(repo_path: str) -> dict:
-    root = Path(repo_path).expanduser().resolve()
+    rel_path = Path(repo_path)
+    root = rel_path.expanduser().resolve()
+
+    # Collect dependencies
     dependencies = watcher(repo_path)
     
     all_files_data = {}
     global_symbols = {}
     all_usages = []
-    raw_relationships = []
 
-    py_files = [f for f in root.rglob("*.py") if f.name != "__init__.py"]
+    py_files = [
+        f for f in root.rglob("*.py") 
+        if f.name != "__init__.py"
+    ]
 
-    # --- PASS 1: File-by-file extraction ---
     for py_file in py_files:
-        rel_path = str(py_file.relative_to(root))
-        code_text = py_file.read_text(encoding="utf-8")
-        module = cst.parse_module(code_text)
+        relative_path = str(py_file.relative_to(root))
         
-        visitor = Tracker(rel_path, code_text)
-        wrapper = cst.metadata.MetadataWrapper(module)
-        wrapper.visit(visitor)
-
-        all_files_data[rel_path] = {
+        # Call parser directly instead of Tracker
+        parsed_data = parser(py_file, relative_path=relative_path)
+        
+        # Store file-level metadata
+        all_files_data[relative_path] = {
             "parse_status": "success",
-            "imports": visitor.imports,
-            "usages": visitor.usages
+            "imports": parsed_data.get("imports", []),
+            "usages": parsed_data.get("usages", [])
         }
         
-        # Register global symbols and pool usages
-        global_symbols.update(visitor.symbols)
-        all_usages.extend(visitor.usages)
-
-    # --- PASS 2: Reachability & Graph Slicing ---
-    # 1. Mark direct symbols (contain a watched usage)
-    for usage in all_usages:
-        enclosing = usage.get("enclosing_symbol")
-        if enclosing:
-            # Find the symbol key in this file
-            for sym_key, sym_data in global_symbols.items():
-                if sym_data["qualified_name"] == enclosing and sym_data["file"] in usage["id"]:
-                    sym_data["reach"] = "direct"
-                    sym_data["watched_usage_ids"].append(usage["id"])
-
-    # 2. Filter symbols dictionary to only keep reachable ones (Direct + Transitive)
-    # (For full transitive traversal, you can parse local calls here and walk backward)
-    final_symbols = {
-        k: v for k, v in global_symbols.items() if v["reach"] != "unreached"
-    }
+        # Aggregate global symbols and usages for cross-file graph building later
+        global_symbols.update(parsed_data.get("symbols", {}))
+        all_usages.extend(parsed_data.get("usages", []))
 
     repo_index = {
         "schema_version": "1.1",
-        "repository": {"root": root.name, "language": "python", "index_status": "complete"},
+        "repository": {
+            "root": root.name,
+            "language": "python",
+            "index_status": "complete"
+        },
         "dependencies": dependencies,
-        "symbols": final_symbols,
-        "relationships": raw_relationships,  # Populated via second-pass call matching
+        "symbols": global_symbols,
+        "relationships": [], # Will be populated in the relationship pass
         "files": all_files_data,
         "diagnostics": []
     }
 
+    print(json.dumps(repo_index, indent=3))
     return repo_index
 
+repo_map('./demo')
