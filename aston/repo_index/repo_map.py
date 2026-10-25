@@ -2,6 +2,10 @@ from pathlib import Path
 from aston.scanner import parser
 from aston.watcher import watcher
 import json
+from aston.pipeline import run_for_repo
+from aston.ingestion import run_stage1_pipeline
+from aston.cli_ui.rich import print_rich_aston_banner, run_with_animation, print_aston_banner
+
 
 def repo_map(repo_path: str) -> dict:
     rel_path = Path(repo_path)
@@ -113,8 +117,61 @@ def repo_map(repo_path: str) -> dict:
         "diagnostics": all_diagnostics
     }
 
-    print(json.dumps(repo_index, indent=3))
+    # print(json.dumps(repo_index, indent=3))
 
     return repo_index
 
-repo_map('./demo')
+# repo_map('./demo')
+
+def migrate_repo(path: str):
+
+    print_aston_banner()
+
+    rel_path = Path(path)
+    root = rel_path.expanduser().resolve()
+
+    repo_index = repo_map(path)
+
+    with open('repo_index.json', 'w') as f:
+        f.write(json.dumps(repo_index, indent=3))
+
+    migartions = []
+
+    for module in repo_index["dependencies"]:
+        if repo_index['dependencies']['module']['declared']['version'] is not None:
+            composed_rules, doc_text, raw_code_examples = run_stage1_pipeline(module, repo_index["dependencies"]['module']['declared']['version'], repo_index['dependencies']['module']['target_version'], repo_index['symbols'])
+            migartions.append({
+                'module': {
+                    'composed_rules': composed_rules,
+                    'doc_text': doc_text,
+                    'raw_code_examples': raw_code_examples
+                }
+            })
+
+
+
+    py_files = [
+        f for f in root.rglob("*.py") 
+        if f.name != "__init__.py"
+    ]
+
+    for py_file in py_files:
+        relative_path = str(py_file.relative_to(root))
+
+        rules = repo_index['files']['relative_path']
+        symbols = repo_index['symbols']
+        relationships = repo_index['relationships']
+        dependencies = repo_index['dependencies']
+
+        source_code = None
+
+        with open(str(relative_path), 'r') as f:
+            source_code = f.read()
+
+        run_for_repo(str(relative_path), rules, symbols, relationships, dependencies, source_code)
+
+
+
+
+
+

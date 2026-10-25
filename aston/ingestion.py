@@ -484,6 +484,7 @@ Keep every input rule in the output for auditability.
         )
 
 
+
 # --- Extraction (unvalidated) -----------------------------------------------
 
 def _github_headers() -> dict[str, str]:

@@ -9,14 +9,20 @@ from uuid import uuid4
 from pathlib import Path
 from aston.artifacts.save_attempt import save_code
 from aston.cli_ui.rich import print_rich_aston_banner, run_with_animation, print_aston_banner
+from aston.repo_index import repo_map
 
 
-def run_for_repo(path: str):
+def run_for_repo(path: str, rules, symbols, relationships, dependencies, source_code):
     # FIXED: previously read unconditionally — crashed on a clean checkout
     # with no repair history yet. Only needed once something is actually
     # in repair mode.
 
-    print_aston_banner()
+    repo_index = None
+
+    with open('repo_index.json', 'r') as f:
+        repo_index = f.read()
+
+
 
     run_id = uuid4().hex[:12]
 
