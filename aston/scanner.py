@@ -23,9 +23,10 @@ class Tracker(VisitorMetadataProvider):
         self.usages = []
         self.symbols = {}
         self.imports = []
-        self.local_calls = []  # General call site registry for relationships
+        self.local_calls = []  
         self.scope_stack = []
         self.local_imports = {}
+        self.current_func_params = set()
 
     @property
     def jedi_script(self):
@@ -79,14 +80,16 @@ class Tracker(VisitorMetadataProvider):
             "line_start": pos.start.line,
             "line_end": pos.end.line,
             "parameters": params,
-            "reach": "unknown",  # Initial state set to unknown as requested
+            "reach": "unknown",
             "watched_usage_ids": []
         }
         self.scope_stack.append(func_name)
+        self.current_func_params = set(params)
 
     def leave_FunctionDef(self, node: cst.FunctionDef) -> None:
         if self.scope_stack:
             self.scope_stack.pop()
+        self.current_func_params = set()
 
     def _get_result_use(self, node: cst.Call) -> str:
         current = node
@@ -108,23 +111,27 @@ class Tracker(VisitorMetadataProvider):
         pos = self.get_metadata(PositionProvider, node)
         line = pos.start.line
         col = pos.start.column
+        end_line = pos.end.line
+        end_col = pos.end.column
         
         call_expr = cst.Module([]).code_for_node(node.func).strip()
         enclosing_symbol = self.scope_stack[-1] if self.scope_stack else None
 
-        # 1. General call-site tracking for cross-function relationships
-        if enclosing_symbol:
-            callee_name = call_expr.split(".")[0]
+        # 1. Capture local / parameter call sites (strictly Name nodes like ask_assistant() or postprocess())
+        if enclosing_symbol and isinstance(node.func, cst.Name):
+            callee_name = node.func.value
             self.local_calls.append({
                 "source_file": self.relative_path,
                 "source_symbol": enclosing_symbol,
                 "callee_name": callee_name,
                 "line": line,
                 "column": col,
-                "end_column": pos.end.column
+                "end_line": end_line,
+                "end_column": end_col,
+                "is_parameter": callee_name in self.current_func_params
             })
 
-        # 2. Target API usage tracking (e.g., OpenAI)
+        # 2. Target external API usage tracking (Attribute nodes like openai.ChatCompletion.create)
         if not isinstance(node.func, cst.Attribute):
             return
 
@@ -166,8 +173,8 @@ class Tracker(VisitorMetadataProvider):
                 "enclosing_symbol": enclosing_symbol,
                 "line": line,
                 "column": col,
-                "end_line": pos.end.line,
-                "end_column": pos.end.column,
+                "end_line": end_line,
+                "end_column": end_col,
                 "usage_kind": "call",
                 "kwargs": kwargs
             })

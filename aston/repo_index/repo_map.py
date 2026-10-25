@@ -35,7 +35,17 @@ def repo_map(repo_path: str) -> dict:
         all_local_calls.extend(parsed["local_calls"])
         all_diagnostics.extend(parsed["diagnostics"])
 
-    # Resolve Relationships across files
+    # Populate watched_usage_ids into symbols based on direct usages
+    for file_path, file_data in all_files_data.items():
+        for usage in file_data["usages"]:
+            enclosing = usage.get("enclosing_symbol")
+            if enclosing:
+                sym_key = f"{file_path}::{enclosing}"
+                if sym_key in global_symbols:
+                    if usage["id"] not in global_symbols[sym_key]["watched_usage_ids"]:
+                        global_symbols[sym_key]["watched_usage_ids"].append(usage["id"])
+
+    # Resolve Relationships across files with correct span & classification
     relationships = []
     for call in all_local_calls:
         target_symbol_key = None
@@ -47,13 +57,28 @@ def repo_map(repo_path: str) -> dict:
                 target_file = sym_data["file"]
                 break
 
-        if target_symbol_key and target_file:
+        if call["is_parameter"]:
             relationships.append({
                 "kind": "local_call",
                 "source_file": call["source_file"],
                 "source_symbol": call["source_symbol"],
                 "line": call["line"],
                 "column": call["column"],
+                "end_line": call["end_line"],
+                "end_column": call["end_column"],
+                "target_file": None,
+                "target_symbol": None,
+                "resolution_status": "unresolved",
+                "reason": "callee_is_parameter"
+            })
+        elif target_symbol_key and target_file:
+            relationships.append({
+                "kind": "local_call",
+                "source_file": call["source_file"],
+                "source_symbol": call["source_symbol"],
+                "line": call["line"],
+                "column": call["column"],
+                "end_line": call["end_line"],
                 "end_column": call["end_column"],
                 "target_file": target_file,
                 "target_symbol": target_symbol_key,
@@ -66,11 +91,12 @@ def repo_map(repo_path: str) -> dict:
                 "source_symbol": call["source_symbol"],
                 "line": call["line"],
                 "column": call["column"],
+                "end_line": call["end_line"],
                 "end_column": call["end_column"],
                 "target_file": None,
                 "target_symbol": None,
                 "resolution_status": "unresolved",
-                "reason": "callee_is_parameter"
+                "reason": "unknown_symbol"
             })
 
     repo_index = {
@@ -86,6 +112,8 @@ def repo_map(repo_path: str) -> dict:
         "files": all_files_data,
         "diagnostics": all_diagnostics
     }
+
+    print(json.dumps(repo_index, indent=3))
 
     return repo_index
 
