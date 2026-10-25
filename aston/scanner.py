@@ -8,59 +8,36 @@ import json
 import jedi
 from typing import Sequence
 
-
 class Tracker(VisitorMetadataProvider):
     METADATA_DEPENDENCIES = (PositionProvider, ParentNodeProvider)
 
-    def __init__(self, code_text: str, file_path: Path | None = None, project: jedi.Project | None = None):
+    def __init__(self, relative_path: str, code_text: str, file_path: Path | None = None):
         super().__init__()
+        self.relative_path = relative_path
         self.code_text = code_text
         self.code_lines = code_text.splitlines()
         self.file_path = file_path
-        self.project = project
-        self._jedi_script = None  # Lazy loaded
         
-        self.imports = {}    
-        self.instances = {}  
-        self.results = []
-        self._recorded_usages = set()
+        self._jedi_script = None  # Lazy-loaded Jedi instance
+        
+        self.usages = []
+        self.symbols = {}
+        self.imports = []
+        self.scope_stack = []
+        
+        # Local state registries for LibCST resolution
+        self.local_imports = {}
+        self.instances = {}
 
     @property
     def jedi_script(self):
+        """Lazy load Jedi only when a fallback is actually triggered."""
         if self._jedi_script is None:
-            self._jedi_script = jedi.Script(self.code_text)
+            if self.file_path and self.file_path.exists():
+                self._jedi_script = jedi.Script(path=str(self.file_path))
+            else:
+                self._jedi_script = jedi.Script(self.code_text)
         return self._jedi_script
-
-    def _get_root_name(self, node) -> str | None:
-        curr = node
-        while isinstance(curr, cst.Attribute):
-            curr = curr.value
-        if isinstance(curr, cst.Name):
-            return curr.value
-        return None
-
-    def _resolve_package(self, root_name: str):
-        package = None
-        imported_name = None
-        local_alias = None
-        instance_stmt = None
-
-        if root_name in self.instances:
-            inst_info = self.instances[root_name]
-            instance_stmt = inst_info["statement"]
-            cls_alias = inst_info["class_alias"]
-            if cls_alias in self.imports:
-                imp_info = self.imports[cls_alias]
-                package = imp_info["package"]
-                imported_name = imp_info["imported_name"]
-                local_alias = imp_info["alias"]
-        elif root_name in self.imports:
-            imp_info = self.imports[root_name]
-            package = imp_info["package"]
-            imported_name = imp_info["imported_name"]
-            local_alias = imp_info["alias"]
-        
-        return package, imported_name, local_alias, instance_stmt
 
     def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
         if node.module and not isinstance(node.names, cst.ImportStar):
@@ -68,35 +45,67 @@ class Tracker(VisitorMetadataProvider):
             for alias in node.names:
                 imported_name = alias.name.value
                 local_alias = alias.asname.name.value if alias.asname else imported_name
-                self.imports[local_alias] = {
-                    "package": pkg,
+                self.local_imports[local_alias] = {"package": pkg, "imported": imported_name}
+                
+                self.imports.append({
+                    "module": pkg,
                     "imported_name": imported_name,
-                    "alias": local_alias
-                }
+                    "alias": alias.asname.name.value if alias.asname else None,
+                    "line": self.get_metadata(PositionProvider, node).start.line,
+                    "import_type": "from_import"
+                })
 
     def visit_Import(self, node: cst.Import) -> None:
         for alias in node.names:
-            imported_name = cst.Module([]).code_for_node(alias.name).strip()
-            local_alias = alias.asname.name.value if alias.asname else imported_name
-            self.imports[local_alias] = {
-                "package": imported_name,
-                "imported_name": imported_name,
-                "alias": local_alias
-            }
+            pkg = cst.Module([]).code_for_node(alias.name).strip()
+            local_alias = alias.asname.name.value if alias.asname else pkg
+            self.local_imports[local_alias] = {"package": pkg, "imported": pkg}
+            
+            self.imports.append({
+                "module": pkg,
+                "imported_name": None,
+                "alias": alias.asname.name.value if alias.asname else None,
+                "line": self.get_metadata(PositionProvider, node).start.line,
+                "import_type": "module"
+            })
 
-    def visit_Assign(self, node: cst.Assign) -> None:
+    def visit_FunctionDef(self, node: cst.FunctionDef) -> None:
+        func_name = node.name.value
         pos = self.get_metadata(PositionProvider, node)
-        stmt_text = self.code_lines[pos.start.line - 1].strip()
+        params = [param.name.value for param in node.params.params]
+        
+        symbol_key = f"{self.relative_path}::{func_name}"
+        self.symbols[symbol_key] = {
+            "file": self.relative_path,
+            "qualified_name": func_name,
+            "kind": "function",
+            "line_start": pos.start.line,
+            "line_end": pos.end.line,
+            "parameters": params,
+            "reach": "unreached",
+            "watched_usage_ids": []
+        }
+        self.scope_stack.append(func_name)
 
-        for target_node in node.targets:
-            if isinstance(target_node.target, cst.Name):
-                var_name = target_node.target.value
-                if isinstance(node.value, cst.Call):
-                    func_code = cst.Module([]).code_for_node(node.value.func).strip()
-                    self.instances[var_name] = {
-                        "class_alias": func_code,
-                        "statement": stmt_text
-                    }
+    def leave_FunctionDef(self, node: cst.FunctionDef) -> None:
+        if self.scope_stack:
+            self.scope_stack.pop()
+
+    def _get_result_use(self, node: cst.Call) -> str:
+        current = node
+        while True:
+            parent = self.get_metadata(ParentNodeProvider, current)
+            if parent is None:
+                return "discarded"
+            if isinstance(parent, cst.Return):
+                return "returned"
+            if isinstance(parent, cst.Assign):
+                return "assigned"
+            if isinstance(parent, cst.Arg):
+                return "argument"
+            if isinstance(parent, cst.Expr):
+                return "discarded"
+            current = parent
 
     def visit_Call(self, node: cst.Call) -> None:
         if not isinstance(node.func, cst.Attribute):
@@ -105,91 +114,56 @@ class Tracker(VisitorMetadataProvider):
         pos = self.get_metadata(PositionProvider, node)
         line = pos.start.line
         col = pos.start.column
-
+        
         call_expr = cst.Module([]).code_for_node(node.func).strip()
+        root_name = call_expr.split(".")[0]
 
-        kwargs = {}
-        for arg in node.args:
-            if arg.keyword:
-                key = arg.keyword.value
-                val = cst.Module([]).code_for_node(arg.value).strip()
-                kwargs[key] = val
+        package = None
+        imported = None
 
-        root_name = self._get_root_name(node.func)
-        package, imported_name, local_alias, instance_stmt = self._resolve_package(root_name) if root_name else (None, None, None, None)
+        # 1. Try LibCST static import resolution first
+        if root_name in self.local_imports:
+            package = self.local_imports[root_name]["package"]
+            imported = self.local_imports[root_name]["imported"]
 
-        # Jedi Fallback if LibCST state missed
+        # 2. Jedi Fallback if LibCST state missed the import/alias
         if not package:
-            defs = self.jedi_script.goto(line=line, column=col) or self.jedi_script.infer(line=line, column=col)
-            if defs:
-                target = defs[0]
-                if target.module_name not in ("builtins", "__main__"):
-                    package = target.module_name
-                    imported_name = target.name
-                    local_alias = target.name
-                    if target.line and target.line <= len(self.code_lines):
-                        instance_stmt = self.code_lines[target.line - 1].strip()
+            try:
+                defs = self.jedi_script.goto(line=line, column=col) or self.jedi_script.infer(line=line, column=col)
+                if defs:
+                    target = defs[0]
+                    if target.module_name and target.module_name not in ("builtins", "__main__"):
+                        package = target.module_name
+                        imported = target.name
+            except Exception:
+                pass  # Fail gracefully if Jedi cannot resolve
 
-        if package:
-            usage_key = (line, call_expr)
-            if usage_key not in self._recorded_usages:
-                self._recorded_usages.add(usage_key)
-                self.results.append({
-                    "package": package,
-                    "imported": imported_name,
-                    "local_alias": local_alias,
-                    "instance": instance_stmt,
-                    "api_usage": call_expr,
-                    "line": line,
-                    "kwargs": kwargs
-                })
+        # Only record if we successfully identified it as an OpenAI or targeted package usage
+        if package and ("openai" in package or "openai" in call_expr):
+            usage_id = f"{self.relative_path}:{line}:{col}"
+            enclosing_symbol = self.scope_stack[-1] if self.scope_stack else None
+            result_use = self._get_result_use(node)
 
-    def _attribute_belongs_to_call(self, node) -> bool:
-        current = node
-        while True:
-            parent = self.get_metadata(ParentNodeProvider, current)
-            if isinstance(parent, cst.Attribute):
-                current = parent
-                continue
-            if isinstance(parent, cst.Call) and parent.func is current:
-                return True
-            return False
+            # Extract kwargs
+            kwargs = {}
+            for arg in node.args:
+                if arg.keyword:
+                    kwargs[arg.keyword.value] = cst.Module([]).code_for_node(arg.value).strip()
 
-    def visit_Attribute(self, node: cst.Attribute) -> None:
-        """
-        Track non-call API references while filtering out intermediate call attributes.
-        """
-        if self._attribute_belongs_to_call(node):
-            return
-
-        parent = self.get_metadata(ParentNodeProvider, node)
-        if isinstance(parent, cst.Attribute):
-            return
-
-        api_usage = cst.Module([]).code_for_node(node).strip()
-        root_name = self._get_root_name(node)
-
-        if not root_name:
-            return
-
-        package, imported_name, local_alias, instance_stmt = self._resolve_package(root_name)
-        if not package:
-            return
-
-        pos = self.get_metadata(PositionProvider, node)
-        line = pos.start.line
-        usage_key = (line, api_usage)
-
-        if usage_key not in self._recorded_usages:
-            self._recorded_usages.add(usage_key)
-            self.results.append({
+            self.usages.append({
+                "id": usage_id,
                 "package": package,
-                "imported": imported_name,
-                "local_alias": local_alias,
-                "instance": instance_stmt,
-                "api_usage": api_usage,
+                "imported": imported,
+                "local_alias": root_name,
+                "api_usage": call_expr,
+                "result_use": result_use,
+                "enclosing_symbol": enclosing_symbol,
                 "line": line,
-                "kwargs": {}
+                "column": col,
+                "end_line": pos.end.line,
+                "end_column": pos.end.column,
+                "usage_kind": "call",
+                "kwargs": kwargs
             })
              
 
