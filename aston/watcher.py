@@ -1,9 +1,5 @@
-import hashlib
 import re
 from pathlib import Path
-import libcst as cst
-from libcst.metadata import VisitorMetadataProvider, PositionProvider, ParentNodeProvider
-import jedi
 from aston.ingestion import get_latest_pypi_version
 
 

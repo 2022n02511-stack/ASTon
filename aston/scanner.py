@@ -18,21 +18,17 @@ class Tracker(VisitorMetadataProvider):
         self.code_text = code_text
         self.code_lines = code_text.splitlines()
         self.file_path = file_path
-        
-        self._jedi_script = None  # Lazy-loaded Jedi instance
+        self._jedi_script = None  
         
         self.usages = []
         self.symbols = {}
         self.imports = []
+        self.local_calls = []  # General call site registry for relationships
         self.scope_stack = []
-        
-        # Local state registries for LibCST resolution
         self.local_imports = {}
-        self.instances = {}
 
     @property
     def jedi_script(self):
-        """Lazy load Jedi only when a fallback is actually triggered."""
         if self._jedi_script is None:
             if self.file_path and self.file_path.exists():
                 self._jedi_script = jedi.Script(path=str(self.file_path))
@@ -83,7 +79,7 @@ class Tracker(VisitorMetadataProvider):
             "line_start": pos.start.line,
             "line_end": pos.end.line,
             "parameters": params,
-            "reach": "unknown",  # Updated from "unreached" to "unknown"
+            "reach": "unknown",  # Initial state set to unknown as requested
             "watched_usage_ids": []
         }
         self.scope_stack.append(func_name)
@@ -109,25 +105,37 @@ class Tracker(VisitorMetadataProvider):
             current = parent
 
     def visit_Call(self, node: cst.Call) -> None:
-        if not isinstance(node.func, cst.Attribute):
-            return
-
         pos = self.get_metadata(PositionProvider, node)
         line = pos.start.line
         col = pos.start.column
         
         call_expr = cst.Module([]).code_for_node(node.func).strip()
-        root_name = call_expr.split(".")[0]
+        enclosing_symbol = self.scope_stack[-1] if self.scope_stack else None
 
+        # 1. General call-site tracking for cross-function relationships
+        if enclosing_symbol:
+            callee_name = call_expr.split(".")[0]
+            self.local_calls.append({
+                "source_file": self.relative_path,
+                "source_symbol": enclosing_symbol,
+                "callee_name": callee_name,
+                "line": line,
+                "column": col,
+                "end_column": pos.end.column
+            })
+
+        # 2. Target API usage tracking (e.g., OpenAI)
+        if not isinstance(node.func, cst.Attribute):
+            return
+
+        root_name = call_expr.split(".")[0]
         package = None
         imported = None
 
-        # 1. Try LibCST static import resolution first
         if root_name in self.local_imports:
             package = self.local_imports[root_name]["package"]
             imported = self.local_imports[root_name]["imported"]
 
-        # 2. Jedi Fallback if LibCST state missed the import/alias
         if not package:
             try:
                 defs = self.jedi_script.goto(line=line, column=col) or self.jedi_script.infer(line=line, column=col)
@@ -137,15 +145,12 @@ class Tracker(VisitorMetadataProvider):
                         package = target.module_name
                         imported = target.name
             except Exception:
-                pass  # Fail gracefully if Jedi cannot resolve
+                pass
 
-        # Only record if we successfully identified it as an OpenAI or targeted package usage
         if package and ("openai" in package or "openai" in call_expr):
             usage_id = f"{self.relative_path}:{line}:{col}"
-            enclosing_symbol = self.scope_stack[-1] if self.scope_stack else None
             result_use = self._get_result_use(node)
 
-            # Extract kwargs
             kwargs = {}
             for arg in node.args:
                 if arg.keyword:
@@ -180,7 +185,7 @@ def parser(path: str | Path, relative_path: str, project: jedi.Project | None = 
     
     module = cst.parse_module(code_text)
     visitor = Tracker(relative_path=relative_path, code_text=code_text, file_path=path)
-    wrapper = MetadataWrapper(module)
+    wrapper = cst.metadata.MetadataWrapper(module)
     wrapper.visit(visitor)
 
     return {
@@ -189,10 +194,11 @@ def parser(path: str | Path, relative_path: str, project: jedi.Project | None = 
             "sha256": file_hash,
             "parse_status": "success"
         },
-        "usages": visitor.usages,
         "imports": visitor.imports,
+        "usages": visitor.usages,
         "symbols": visitor.symbols,
-        "diagnostics": [] # File-specific diagnostics if any
+        "local_calls": visitor.local_calls,
+        "diagnostics": []
     }
 
 # parser()
