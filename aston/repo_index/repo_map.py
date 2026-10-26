@@ -7,6 +7,10 @@ from aston.ingestion import run_stage1_pipeline
 from aston.cli_ui.rich import print_rich_aston_banner, run_with_animation, print_aston_banner
 from aston.axios import scraper
 from repo_verification import verify_full_repo_in_docker
+from aston.github_integrations.pr import create_migration_pr
+from aston.ingestion import resolve_github_repo
+from uuid import uuid4
+
 
 
 def repo_map(repo_path: str) -> dict:
@@ -265,6 +269,60 @@ def migrate_repo(path: str):
         exit(1)
     else:
         print("\n🎉 All files migrated successfully!")
+        print("\n==================================================")
+        print("--- [Stage 6] Repo-Wide Integration Verification ---")
+        print("==================================================")
+
+        test_result = verify_full_repo_in_docker(str(root), temp_req_path)
+
+        if not test_result["success"]:
+            print("\n❌ Full-Repo Verification Failed!")
+            print(f"Exit Code: {test_result['exit_code']}")
+            print("--- STDOUT ---")
+            print(test_result["stdout"])
+            print("--- STDERR ---")
+            print(test_result["stderr"])
+            print("\nAborting PR creation due to failing integration test suite.")
+            exit(1)
+
+        print("\n✅ Full-Repo Test Suite Passed Successfully (Exit Code 0)!")
+
+        original_req_path = root / "requirements.txt"
+        if temp_req_path.exists():
+            original_req_path.write_text(temp_req_path.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"✅ Successfully updated original requirements.txt")
+
+        print("Want to create PR[Y/N]?")
+        gross = ['YES', 'yes', 'y', 'Y']
+        ans = input()
+        if ans in gross:
+        
+
+            # =========================================================================
+            # STEP 4: AUTOMATED PULL REQUEST CREATION
+            # =========================================================================
+            github_repo = resolve_github_repo(list(repo_index.get("dependencies", {}).keys())[0])
+            if github_repo:
+                branch_id = uuid4().hex[:8]
+                branch_name = f"aston/automated-migration-{branch_id}"
+                title = "chore(deps): automated dependency migration via Aston"
+                body = (
+                    "### 🤖 Automated Dependency Upgrade\n\n"
+                    "Aston successfully migrated this repository and verified system behavior.\n"
+                    f"- **Migrated Files:** {len(passed_files)}\n"
+                    f"- **File-Level Checks:** Passed (Docker isolated syntax/import checks)\n"
+                    f"- **Repo-Wide Verification:** Passed (`pytest` integration gate passed successfully)"
+                )
+                
+                create_migration_pr(
+                    repo_path=str(root),
+                    github_repo=github_repo,
+                    branch_name=branch_name,
+                    title=title,
+                    body=body
+                )
+        else:
+            print("PR skipped.")
 
 
 

@@ -50,9 +50,10 @@ def verify_full_repo_in_docker(
     container_req = f"/app/{relative_req.as_posix()}"
 
     script = f"""
+export XDG_CACHE_HOME=/tmp/cache
 set -eu
 
-python -m pip install -r {shlex.quote(container_req)} ||
+python -m pip install --no-cache-dir -r {shlex.quote(container_req)} ||
     {{ echo ASTON_SETUP_FAILED; exit 20; }}
 
 python -m compileall -q /app ||

@@ -1,7 +1,6 @@
 import argparse
 from pathlib import Path
-from aston.pipeline import run_for_repo
-
+from aston.repo_index.repo_map import migrate_repo
 
 def main():
     parser = argparse.ArgumentParser(prog="aston")
@@ -19,7 +18,7 @@ def main():
     args = parser.parse_args()
 
     if args.command == "check" and args.run:
-        run_for_repo(args.path)
+        migrate_repo(args.path)
 
 
 if __name__ == "__main__":
