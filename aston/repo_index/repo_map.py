@@ -6,6 +6,7 @@ from aston.pipeline import run_for_repo, repair_file
 from aston.ingestion import run_stage1_pipeline
 from aston.cli_ui.rich import print_rich_aston_banner, run_with_animation, print_aston_banner
 from aston.axios import scraper
+from repo_verification import verify_full_repo_in_docker
 
 
 def repo_map(repo_path: str) -> dict:
@@ -219,7 +220,7 @@ def migrate_repo(path: str):
         )
 
         if context_data:
-            file_contexts[relative_path] = context_data
+            file_contexts[relative_path] = context_data  
 
     # 5. Retry Loop for Failed Files (Up to 2 attempts per failed path)
     if failed_files:
@@ -239,6 +240,7 @@ def migrate_repo(path: str):
                 path=path,
                 temp_req_path=temp_req_path,
                 context_data=context_data,
+                root_path=str(root),
                 max_retries=2,
                 passed_files=passed_files,
                 failed_files=failed_files

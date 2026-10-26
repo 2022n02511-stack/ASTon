@@ -1,9 +1,16 @@
-import subprocess
-import os
+
+from __future__ import annotations
+
 import json
-from enum import Enum
+import shutil
+import subprocess
+import tempfile
+import time
 from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
 from typing import Optional
+
 
 class VerificationResult(str, Enum):
     PASS = "PASS"
@@ -12,216 +19,383 @@ class VerificationResult(str, Enum):
     EXTERNAL_SERVICE_ERROR = "EXTERNAL_SERVICE_ERROR"
     TIMEOUT = "TIMEOUT"
 
+
 @dataclass
 class VerificationOutput:
     status: VerificationResult
     target_file: str
     error_type: Optional[str] = None
     error_message: Optional[str] = None
-    raw_stderr: Optional[str] = None
-    raw_stdout: Optional[str] = None
+    raw_stderr: str = ""
+    raw_stdout: str = ""
 
-def verify_single_file_in_docker(target_file: str = "before.py", req_file: str = "temp_requirements.txt") -> VerificationOutput:
+    @property
+    def stderr(self) -> str:
+        return self.raw_stderr
+
+    @property
+    def stdout(self) -> str:
+        return self.raw_stdout
+
+
+def _ignore_repo_files(directory: str, names: list[str]) -> set[str]:
+    """Exclude large or machine-specific directories from the Docker context."""
+    excluded = {
+        ".git",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "node_modules",
+    }
+    return {name for name in names if name in excluded}
+
+
+def _classify_runtime_failure(stderr: str) -> tuple[VerificationResult, str]:
+    lower = stderr.lower()
+
+    external_markers = (
+        "connectionerror",
+        "connecttimeout",
+        "readtimeout",
+        "name resolution",
+        "failed to establish a new connection",
+        "api connection error",
+        "service unavailable",
+        "rate limit",
+    )
+    if any(marker in lower for marker in external_markers):
+        return VerificationResult.EXTERNAL_SERVICE_ERROR, "ExternalServiceError"
+
+    if "modulenotfounderror" in lower or "importerror" in lower:
+        return VerificationResult.MIGRATION_ERROR, "ImportError"
+
+    if "syntaxerror" in lower:
+        return VerificationResult.MIGRATION_ERROR, "SyntaxError"
+
+    if "attributeerror" in lower:
+        return VerificationResult.MIGRATION_ERROR, "AttributeError"
+
+    if "typeerror" in lower:
+        return VerificationResult.MIGRATION_ERROR, "TypeError"
+
+    if "assertionerror" in lower:
+        return VerificationResult.MIGRATION_ERROR, "AssertionError"
+
+    return VerificationResult.MIGRATION_ERROR, "RuntimeError"
+
+
+def verify_single_file_in_docker(
+    target_file: str | Path = "before.py",
+    req_file: str | Path = "temp_requirements.txt",
+    repo_root: str | Path | None = None,
+    timeout: int = 300,
+    build_timeout: int = 600,
+    python_image: str = "python:3.11-slim",
+) -> VerificationOutput:
     """
-    Stage 4: Sandboxed Docker Verification with Mocked Network Calls & Rich Error Context.
-    Uses direct COPY into the image to eliminate host volume permission conflicts.
+    Verify one migrated Python file inside Docker.
+
+    The full repository is copied into an isolated temporary build context so
+    imports between local Python files can resolve.
+
+    Existing usage remains valid:
+        verify_single_file_in_docker(path, temp_req_path)
+
+    Recommended for multi-file migrations:
+        verify_single_file_in_docker(
+            path,
+            temp_req_path,
+            repo_root=root_path,
+        )
+
+    This checks execution of the target file. It does not replace full-repo
+    tests or guarantee that all application behavior is correct.
     """
-    print("\n==================================================")
-    print("--- [Stage 4] Sandboxed Docker Verification ---")
-    print("==================================================")
+    started = time.monotonic()
 
-    # Read requirements to determine which dependency-specific
-    # verification behavior is needed.
-    with open(req_file, "r") as f:
-        requirements = f.read().lower()
+    target_input = Path(target_file).expanduser()
+    requirements_input = Path(req_file).expanduser()
 
-    has_openai = any(
-        line.strip().startswith("openai")
-        for line in requirements.splitlines()
-        if line.strip() and not line.strip().startswith("#")
+    if repo_root is not None:
+        root = Path(repo_root).expanduser().resolve()
+    elif not target_input.is_absolute():
+        root = Path.cwd().resolve()
+    else:
+        # For nested absolute paths, pass repo_root explicitly so sibling
+        # modules and package imports remain available.
+        root = target_input.resolve().parent
+
+    target_abs = (
+        target_input.resolve()
+        if target_input.is_absolute()
+        else (root / target_input).resolve()
     )
 
-    # 1. Generate the test wrapper script on host
-
-    if has_openai:
-        mock_wrapper_content = f"""import sys
-import traceback
-from unittest.mock import patch, MagicMock
-
-# 1. Construct realistic synthetic returns for v1 SDK response objects
-mock_choice = MagicMock()
-mock_choice.message.content = "Mocked response verification successful."
-
-mock_completion = MagicMock()
-mock_completion.choices = [mock_choice]
-
-mock_embedding_data = MagicMock()
-mock_embedding_data.embedding = [0.1, 0.2, 0.3]
-
-mock_embedding_response = MagicMock()
-mock_embedding_response.data = [mock_embedding_data]
-
-# 2. Patch OpenAI client methods directly at the resource layer
-with patch("openai.resources.chat.completions.Completions.create", return_value=mock_completion), \
-     patch("openai.resources.embeddings.Embeddings.create", return_value=mock_embedding_response):
     try:
-        import {target_file.replace('.py', '')}
-        print("STAGE4_MOCK_EXECUTION_SUCCESS")
-    except AttributeError as e:
-        print("STAGE4_ERROR_TYPE: AttributeError", file=sys.stderr)
-        print(f"STAGE4_ERROR_MSG: {{e}}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(101)
-    except Exception as e:
-        print(f"STAGE4_ERROR_TYPE: {{type(e).__name__}}", file=sys.stderr)
-        print(f"STAGE4_ERROR_MSG: {{e}}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(102)
-"""
+        target_rel = target_abs.relative_to(root)
+    except ValueError:
+        return VerificationOutput(
+            status=VerificationResult.ENVIRONMENT_ERROR,
+            target_file=str(target_abs),
+            error_type="PathError",
+            error_message=(
+                f"Target file {target_abs} is outside repository root {root}. "
+                "Pass the correct repo_root."
+            ),
+        )
+
+    if not root.is_dir():
+        return VerificationOutput(
+            status=VerificationResult.ENVIRONMENT_ERROR,
+            target_file=str(target_abs),
+            error_type="RepositoryNotFound",
+            error_message=f"Repository root does not exist: {root}",
+        )
+
+    if not target_abs.is_file():
+        return VerificationOutput(
+            status=VerificationResult.ENVIRONMENT_ERROR,
+            target_file=str(target_abs),
+            error_type="TargetFileNotFound",
+            error_message=f"Target file does not exist: {target_abs}",
+        )
+
+    if not requirements_input.is_absolute():
+        requirements_input = (Path.cwd() / requirements_input).resolve()
     else:
-        mock_wrapper_content = f"""import sys
-import traceback
+        requirements_input = requirements_input.resolve()
 
-try:
-    import {target_file.replace('.py', '')}
-    print("STAGE4_MOCK_EXECUTION_SUCCESS")
-except AttributeError as e:
-    print("STAGE4_ERROR_TYPE: AttributeError", file=sys.stderr)
-    print(f"STAGE4_ERROR_MSG: {{e}}", file=sys.stderr)
-    traceback.print_exc(file=sys.stderr)
-    sys.exit(101)
-except Exception as e:
-    print(f"STAGE4_ERROR_TYPE: {{type(e).__name__}}", file=sys.stderr)
-    print(f"STAGE4_ERROR_MSG: {{e}}", file=sys.stderr)
-    traceback.print_exc(file=sys.stderr)
-    sys.exit(102)
-"""
+    if not requirements_input.is_file():
+        return VerificationOutput(
+            status=VerificationResult.ENVIRONMENT_ERROR,
+            target_file=str(target_abs),
+            error_type="RequirementsNotFound",
+            error_message=f"Requirements file does not exist: {requirements_input}",
+        )
 
-    with open("run_mocked_test.py", "w") as f:
-        f.write(mock_wrapper_content)
-
-    # 2. Solution A: COPY files into Dockerfile & explicitly grant read permissions
-    # In docker_sandbox.py
-    dockerfile_content = f"""FROM python:3.11-slim
-
-WORKDIR /app
-
-ENV OPENAI_API_KEY=sk-test-dummy-key-for-verification-only
-
-COPY {req_file} /app/requirements.txt
-
-RUN pip install --no-cache-dir --default-timeout=120 --retries 5 -r requirements.txt
-
-COPY {target_file} /app/{target_file}
-COPY run_mocked_test.py /app/run_mocked_test.py
-
-RUN chmod 644 /app/{target_file} /app/run_mocked_test.py
-"""
-
-    with open("Dockerfile.sandbox", "w") as f:
-        f.write(dockerfile_content)
+    docker = shutil.which("docker")
+    if docker is None:
+        return VerificationOutput(
+            status=VerificationResult.ENVIRONMENT_ERROR,
+            target_file=str(target_abs),
+            error_type="DockerNotFound",
+            error_message="Docker CLI was not found on PATH.",
+        )
 
     try:
-        # --- Step 1: Docker Build ---
-        build_res = subprocess.run(
-            ["docker", "build", "--progress=plain",
-                "-t", "patch-verifier",
-                "-f", "Dockerfile.sandbox", "."],
-            text=True
+        daemon_check = subprocess.run(
+            [docker, "info"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
         )
-        if build_res.returncode != 0:
-            print(f"❌ Environment Build Failed:\n{build_res.stderr}")
-            return VerificationOutput(
-                status=VerificationResult.ENVIRONMENT_ERROR,
-                target_file=target_file,
-                error_type="DockerBuildError",
-                error_message="Docker build image failed",
-                raw_stderr=build_res.stderr
-            )
-
-        # --- Step 2: AST Compilation Check ---
-        print("⚡ Test 1: Checking Python AST compilation...")
-        compile_res = subprocess.run(
-            ["docker", "run", "--rm", "patch-verifier", "python", "-m", "py_compile", target_file],
-            capture_output=True, text=True
-        )
-        if compile_res.returncode != 0:
-            print(f"❌ AST Compilation Error:\n{compile_res.stderr}")
-            return VerificationOutput(
-                status=VerificationResult.MIGRATION_ERROR,
-                target_file=target_file,
-                error_type="SyntaxError",
-                error_message="Python py_compile failed",
-                raw_stderr=compile_res.stderr
-            )
-        print("✅ AST Compilation Passed!")
-
-        # --- Step 3: Mocked Runtime & API Method Execution ---
-        print("⚡ Test 2 & 3: Executing Mocked Runtime & Import Check...")
-        exec_res = subprocess.run(
-            ["docker", "run", "--rm", "patch-verifier", "python", "run_mocked_test.py"],
-            capture_output=True, text=True, timeout=30
-        )
-
-        if exec_res.returncode == 0 and "STAGE4_MOCK_EXECUTION_SUCCESS" in exec_res.stdout:
-            print("✅ Mocked Execution Passed! Migration verified cleanly.")
-            return VerificationOutput(
-                status=VerificationResult.PASS,
-                target_file=target_file,
-                raw_stdout=exec_res.stdout
-            )
-
-        stderr_output = exec_res.stderr
-
-        # Catch Host / Container Filesystem Permissions Failure
-        if "Permission denied" in stderr_output or "can't open file" in stderr_output:
-            print(f"⚠️ Environment Permission Error:\n{stderr_output}")
-            return VerificationOutput(
-                status=VerificationResult.ENVIRONMENT_ERROR,
-                target_file=target_file,
-                error_type="PermissionError",
-                error_message="Container filesystem permission denied",
-                raw_stderr=stderr_output
-            )
-
-        # Extract Error Type and Message for Stage 5 Repair Loop
-        error_type = "RuntimeError"
-        error_msg = "Execution failed inside sandbox"
-        for line in stderr_output.splitlines():
-            if line.startswith("STAGE4_ERROR_TYPE:"):
-                error_type = line.replace("STAGE4_ERROR_TYPE:", "").strip()
-            elif line.startswith("STAGE4_ERROR_MSG:"):
-                error_msg = line.replace("STAGE4_ERROR_MSG:", "").strip()
-
-        if exec_res.returncode == 101 or "AttributeError" in stderr_output or "ImportError" in stderr_output:
-            print(f"❌ Migration Structural Error detected:\n{stderr_output}")
-            return VerificationOutput(
-                status=VerificationResult.MIGRATION_ERROR,
-                target_file=target_file,
-                error_type=error_type,
-                error_message=error_msg,
-                raw_stderr=stderr_output,
-                raw_stdout=exec_res.stdout
-            )
-        else:
-            print(f"❌ Unhandled Execution Error:\n{stderr_output}")
-            return VerificationOutput(
-                status=VerificationResult.MIGRATION_ERROR,
-                target_file=target_file,
-                error_type=error_type,
-                error_message=error_msg,
-                raw_stderr=stderr_output,
-                raw_stdout=exec_res.stdout
-            )
-
     except subprocess.TimeoutExpired:
         return VerificationOutput(
-            status=VerificationResult.TIMEOUT,
-            target_file=target_file,
-            error_message="Container execution timed out after 30s"
+            status=VerificationResult.ENVIRONMENT_ERROR,
+            target_file=str(target_abs),
+            error_type="DockerUnavailable",
+            error_message="Timed out checking whether the Docker daemon is available.",
         )
-    finally:
-        # Cleanup temporary files from host working directory
-        for tmp_file in ["Dockerfile.sandbox", "run_mocked_test.py"]:
-            if os.path.exists(tmp_file):
-                os.remove(tmp_file)
+
+    if daemon_check.returncode != 0:
+        return VerificationOutput(
+            status=VerificationResult.ENVIRONMENT_ERROR,
+            target_file=str(target_abs),
+            error_type="DockerUnavailable",
+            error_message=(
+                daemon_check.stderr.strip()
+                or daemon_check.stdout.strip()
+                or "Docker daemon is unavailable."
+            ),
+            raw_stderr=daemon_check.stderr,
+            raw_stdout=daemon_check.stdout,
+        )
+
+    # Unique temporary context prevents concurrent verifier runs from
+    # overwriting each other's Dockerfiles or runner scripts.
+    with tempfile.TemporaryDirectory(prefix="aston_verify_") as temp_dir:
+        context = Path(temp_dir)
+        repo_copy = context / "repo"
+        repo_copy.mkdir()
+
+        try:
+            shutil.copytree(
+                root,
+                repo_copy,
+                dirs_exist_ok=True,
+                ignore=_ignore_repo_files,
+            )
+        except OSError as exc:
+            return VerificationOutput(
+                status=VerificationResult.ENVIRONMENT_ERROR,
+                target_file=str(target_abs),
+                error_type="RepositoryCopyError",
+                error_message=str(exc),
+            )
+
+        copied_target = repo_copy / target_rel
+        if not copied_target.is_file():
+            return VerificationOutput(
+                status=VerificationResult.ENVIRONMENT_ERROR,
+                target_file=str(target_abs),
+                error_type="TargetCopyError",
+                error_message=f"Target file was not copied into Docker context: {target_rel}",
+            )
+
+        # Use the supplied target-version requirements, not the repository's
+        # original requirements file.
+        shutil.copy2(requirements_input, context / "requirements.txt")
+
+        runner = r'''
+import runpy
+import sys
+import traceback
+from pathlib import Path
+
+target = Path(sys.argv[1]).resolve()
+repo_root = Path("/app/repo").resolve()
+
+# Make repository-root imports and local package imports available.
+sys.path.insert(0, str(repo_root))
+sys.path.insert(0, str(target.parent))
+
+try:
+    runpy.run_path(str(target), run_name="__main__")
+except SystemExit as exc:
+    # Treat sys.exit(0) as success; non-zero exits as failure.
+    code = exc.code
+    if code not in (None, 0):
+        traceback.print_exc()
+        raise
+except BaseException:
+    traceback.print_exc()
+    raise
+'''
+        (context / "run_target.py").write_text(runner, encoding="utf-8")
+
+        dockerfile = f"""
+FROM {python_image}
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV OPENAI_API_KEY=sk-test-aston-verification
+
+COPY requirements.txt /app/requirements.txt
+RUN python -m pip install --no-cache-dir --default-timeout=120 --retries 3 -r /app/requirements.txt
+
+COPY repo/ /app/repo/
+COPY run_target.py /app/run_target.py
+
+CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
+"""
+        (context / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+
+        # Unique image tag prevents concurrent invocations from sharing a tag.
+        import uuid
+        image_tag = f"aston-verify-{uuid.uuid4().hex[:12]}"
+
+        try:
+            build = subprocess.run(
+                [
+                    docker,
+                    "build",
+                    "--tag",
+                    image_tag,
+                    "--file",
+                    str(context / "Dockerfile"),
+                    str(context),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=build_timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return VerificationOutput(
+                status=VerificationResult.TIMEOUT,
+                target_file=str(target_abs),
+                error_type="DockerBuildTimeout",
+                error_message=f"Docker image build exceeded {build_timeout} seconds.",
+                raw_stdout=exc.stdout or "",
+                raw_stderr=exc.stderr or "",
+            )
+
+        if build.returncode != 0:
+            return VerificationOutput(
+                status=VerificationResult.ENVIRONMENT_ERROR,
+                target_file=str(target_abs),
+                error_type="DockerBuildError",
+                error_message=(
+                    build.stderr.strip()
+                    or build.stdout.strip()
+                    or "Docker image build failed."
+                ),
+                raw_stderr=build.stderr,
+                raw_stdout=build.stdout,
+            )
+
+        try:
+            run = subprocess.run(
+                [
+                    docker,
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    image_tag,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return VerificationOutput(
+                status=VerificationResult.TIMEOUT,
+                target_file=str(target_abs),
+                error_type="ExecutionTimeout",
+                error_message=f"Target execution exceeded {timeout} seconds.",
+                raw_stdout=exc.stdout or "",
+                raw_stderr=exc.stderr or "",
+            )
+        finally:
+            # Clean up the unique image even when execution fails.
+            subprocess.run(
+                [docker, "image", "rm", "-f", image_tag],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+
+        elapsed = time.monotonic() - started
+
+        if run.returncode == 0:
+            return VerificationOutput(
+                status=VerificationResult.PASS,
+                target_file=str(target_abs),
+                raw_stdout=(
+                    f"Target executed successfully in {elapsed:.1f}s.\n"
+                    + run.stdout
+                ),
+                raw_stderr=run.stderr,
+            )
+
+        status, error_type = _classify_runtime_failure(run.stderr)
+        return VerificationOutput(
+            status=status,
+            target_file=str(target_abs),
+            error_type=error_type,
+            error_message=(
+                run.stderr.strip()
+                or run.stdout.strip()
+                or f"Target exited with code {run.returncode}."
+            ),
+            raw_stderr=run.stderr,
+            raw_stdout=run.stdout,
+        )

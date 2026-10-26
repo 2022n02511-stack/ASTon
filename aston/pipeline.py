@@ -14,6 +14,7 @@ def repair_file(
     path: str,
     temp_req_path: Path,
     context_data: dict,
+    root_path: str,
     max_retries: int = 2,
     passed_files: list = None,
     failed_files: list = None
@@ -46,7 +47,7 @@ def repair_file(
     if repair_context_path.exists():
         rep_con = repair_context_path.read_text(encoding="utf-8")
 
-    pr = verify_single_file_in_docker(path, temp_req_path)
+    pr = verify_single_file_in_docker(path, temp_req_path, repo_root=root_path)
 
     while pr.status == VerificationResult.MIGRATION_ERROR and retry_count < max_retries:
         retry_count += 1
@@ -104,7 +105,7 @@ def repair_file(
         )
 
         Path(path).write_text(factored_code, encoding="utf-8")
-        pr = verify_single_file_in_docker(path, temp_req_path)
+        pr = verify_single_file_in_docker(path, temp_req_path, repo_root=root_path)
 
     if pr.status == VerificationResult.PASS:
         save_code(file_run_dir / "final.py", Path(path).read_text(encoding="utf-8"))
@@ -264,6 +265,10 @@ def run_for_repo(
     Path(path).write_text(factored_code, encoding="utf-8")
 
     # Store everything including source_code in context_data for repair_file
+    # Initial verification & delegation to repair loop if needed
+    pr = verify_single_file_in_docker(path, temp_req_path, repo_root=root_path)
+
+    # Store everything including source_code in context_data for repair_file
     context_data = {
         "file_run_dir": file_run_dir,
         "all_reports": all_reports,
@@ -278,8 +283,6 @@ def run_for_repo(
         "source_code": source_code,
     }
 
-    pr = verify_single_file_in_docker(path, temp_req_path)
-
     if pr.status == VerificationResult.PASS:
         save_code(file_run_dir / "final.py", Path(path).read_text(encoding="utf-8"))
         migrated_path = Path("succ_migrations")
@@ -290,5 +293,15 @@ def run_for_repo(
             passed_files.append(path)
         return True, context_data
     else:
-        failed_files.append(path)
-        return False, context_data
+        # Hand off to repair function with max 3 retries during the initial pass
+        print(f"\n⚠️ Initial verification failed for {path}. Starting initial repair loop (max 3 retries)...")
+        success = repair_file(
+            path=path,
+            temp_req_path=temp_req_path,
+            context_data=context_data,
+            root_path=root_path,
+            max_retries=3,
+            passed_files=passed_files,
+            failed_files=failed_files
+        )
+        return success, context_data
