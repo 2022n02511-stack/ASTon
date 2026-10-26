@@ -234,7 +234,7 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
 
     if not composed_rules:
         print("⚠️ Warning: No migration rules extracted across the version chain!")
-        return [], [], [], "", False
+        return [], [], False
 
     print("\n========== STAGE 2 DEBUG ==========")
 

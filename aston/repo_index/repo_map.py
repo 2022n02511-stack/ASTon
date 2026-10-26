@@ -152,7 +152,6 @@ def migrate_repo(path: str):
                 repo_index["symbols"]
             )
             
-            # Store cleanly as a dictionary keyed by module name
             migrations[module] = {
                 'composed_rules': composed_rules,
                 'doc_text': doc_text,
@@ -168,7 +167,6 @@ def migrate_repo(path: str):
     
     req_lines = original_req_path.read_text(encoding='utf-8').splitlines() if original_req_path.exists() else []
     
-    # FIXED: Iterate using module keys from dependencies correctly
     for module, dep_data in repo_index.get('dependencies', {}).items():
         target_ver = dep_data.get('target_version')
         if not target_ver:
@@ -200,65 +198,71 @@ def migrate_repo(path: str):
     for py_file in py_files:
         relative_path = str(py_file.relative_to(root))
 
-        # Extract file-specific data safely from repo_index
         file_data = repo_index.get('files', {}).get(relative_path, {})
         rules = file_data.get('usages', [])
         symbols = repo_index.get('symbols', {})
         relationships = repo_index.get('relationships', [])
         dependencies = repo_index.get('dependencies', {})
-
         source_code = py_file.read_text(encoding='utf-8')
 
         success, context_data = run_for_repo(
             root_path=str(root),
             path=relative_path,
-            rules=file_data.get('usages', []),
-            symbols=repo_index.get('symbols', {}),
-            relationships=repo_index.get('relationships', []),
-            dependencies=repo_index.get('dependencies', {}),
+            rules=rules,
+            symbols=symbols,
+            relationships=relationships,
+            dependencies=dependencies,
             source_code=source_code,
             temp_req_path=temp_req_path,
             passed_files=passed_files,
             failed_files=failed_files
         )
 
-        # Save context for potential retries later
-        file_contexts[relative_path] = context_data
+        if context_data:
+            file_contexts[relative_path] = context_data
 
-        if failed_files:
-            print(f"\n🔄 Starting 2-Attempt Repair Loop for {len(failed_files)} failed file(s)...")
-            
-            still_failed = []
-            for path in failed_files.copy():
-                print(f"\n[Running Repair Loop]: {path}")
-                context_data = file_contexts.get(path)
+    # 5. Retry Loop for Failed Files (Up to 2 attempts per failed path)
+    if failed_files:
+        print(f"\n🔄 Starting 2-Attempt Repair Loop for {len(failed_files)} failed file(s)...")
+        
+        still_failed = []
+        for path in failed_files.copy():
+            print(f"\n[Running Repair Loop]: {path}")
+            context_data = file_contexts.get(path)
 
-                if not context_data:
-                    still_failed.append(path)
-                    continue
+            if not context_data:
+                still_failed.append(path)
+                continue
 
-                # Run only the repair loop 2 times using the stored context
-                recovered = repair_file(path, temp_req_path, context_data, max_retries=2)
+            # Clean call to repair_file using context_data
+            recovered = repair_file(
+                path=path,
+                temp_req_path=temp_req_path,
+                context_data=context_data,
+                max_retries=2,
+                passed_files=passed_files,
+                failed_files=failed_files
+            )
 
-                if recovered:
-                    passed_files.remove(path) if path in passed_files else None # just in case
-                    passed_files.append(path)
-                else:
-                    still_failed.append(path)
+            if recovered:
+                print(f"✅ Successfully recovered: {path}")
+            else:
+                still_failed.append(path)
+                print(f"❌ Failed after retry attempts: {path}")
 
-                failed_files = still_failed
+        failed_files = still_failed
 
-        # Final Summary & Exit Check
-        print(f"\n📊 Final Migration Summary — Passed: {len(passed_files)}, Failed: {len(failed_files)}")
+    # 6. Final Summary & Exit Check
+    print(f"\n📊 Final Migration Summary — Passed: {len(passed_files)}, Failed: {len(failed_files)}")
 
-        if failed_files:
-            print("\n❌ Permanent Migration Failures Detected:")
-            for failed_path in failed_files:
-                print(f"   • File Path: {failed_path}")
-            print("\nExiting due to unresolved migration errors.")
-            exit(1)
-        else:
-            print("\n🎉 All files migrated successfully!")
+    if failed_files:
+        print("\n❌ Permanent Migration Failures Detected:")
+        for failed_path in failed_files:
+            print(f"   • File Path: {failed_path}")
+        print("\nExiting due to unresolved migration errors.")
+        exit(1)
+    else:
+        print("\n🎉 All files migrated successfully!")
 
 
 
