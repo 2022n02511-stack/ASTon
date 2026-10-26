@@ -33,10 +33,13 @@ def repair_file(
     all_tar_vers = context_data["all_tar_vers"]
     all_cur_vers = context_data["all_cur_vers"]
     raw_code_examples = context_data["raw_code_examples"]
+    
+    # Required parameters for code_patcher
     rules = context_data["rules"]
     symbols = context_data["symbols"]
     relationships = context_data["relationships"]
     dependencies = context_data["dependencies"]
+    source_code = context_data["source_code"]
 
     rep_con = None
     repair_context_path = Path("repair_context.txt")
@@ -70,17 +73,23 @@ def repair_file(
             "repair_instructions": rep_con,
         }
 
-        # Update context source_code with current failed source
+        # Update source code in context
         context_data["source_code"] = failed_source
 
+        # Explicitly passing rules, symbols, relationships, dependencies, source_code
         factored_code = code_patcher(
-            source_code=path,
+            source_code=failed_source,
             matches=all_reports,
             rules=validated_all_rules_dict,
             target_version=all_tar_vers,
             current_version=all_cur_vers,
+            # Explicitly requested parameters:
+            repo_rules=rules,
+            symbols=symbols,
+            relationships=relationships,
+            dependencies=dependencies,
             repair_context=repair_context,
-            raw_code_examples=raw_code_examples,
+            raw_code_examples=raw_code_examples
         )
 
         if not factored_code or factored_code == failed_source:
@@ -168,7 +177,8 @@ def run_for_repo(
             stage0_symbols,
             file_usages,
             composed_rules,
-            doc_text
+            doc_text,
+            path
         )
 
         if not is_complete:
@@ -235,13 +245,17 @@ def run_for_repo(
         if isinstance(examples, list):
             raw_code_examples.extend(examples)
 
-    # First code generation attempt
+    # First code generation attempt — explicitly passing rules, symbols, relationships, dependencies, source_code
     factored_code = code_patcher(
-        source_code=path,
+        source_code=source_code,
         matches=all_reports,
         rules=validated_all_rules_dict,
         target_version=all_tar_vers,
         current_version=all_cur_vers,
+        repo_rules=rules,
+        symbols=symbols,
+        relationships=relationships,
+        dependencies=dependencies,
         repair_context=None,
         raw_code_examples=raw_code_examples,
     )
@@ -249,7 +263,7 @@ def run_for_repo(
     save_code(file_run_dir / "first_attempt.py", factored_code)
     Path(path).write_text(factored_code, encoding="utf-8")
 
-    # Package everything into context_data including source_code
+    # Store everything including source_code in context_data for repair_file
     context_data = {
         "file_run_dir": file_run_dir,
         "all_reports": all_reports,

@@ -53,7 +53,7 @@ def stage0(package_name: str, parses: list[dict]) -> set[str]:
 
 
 
-def man_extract(rules: list, parses: list[dict]) -> list[dict]:
+def man_extract(rules: list, parses: list[dict], source_file: str,) -> list[dict]:
     """Match AST usages to all relevant migration candidates without
     dropping candidate status, evidence, or alternative replacements."""
 
@@ -72,7 +72,7 @@ def man_extract(rules: list, parses: list[dict]) -> list[dict]:
         extracted[(package, old_api)].append(dict(rule))
 
     report = []
-    filename = Path("before.py").name
+    filename = Path(source_file).name
 
     for parse in parses:
         canonical_usage = canonicalize_usage(parse)
@@ -106,16 +106,18 @@ def code_patcher(
     rules: list,
     target_version: list,
     current_version: list,
+    repo_rules,
+    symbols,
+    relationships,
+    dependencies,
     repair_context: dict | None = None,
     raw_code_examples: list[str] | None = None,
 ):
     """Stage 3 migration and Stage 5 verification-guided repair."""
-    with open(source_code, "r") as f:
-        code = f.read()
 
     if not contains_items(rules) or not contains_items(matches):
         print("No valid migration rules or matching usages. Retaining original code unmodified.")
-        return code
+        return source_code
 
     system_prompt = prompt
 
@@ -152,28 +154,40 @@ Return the complete source file only.
             system_prompt += repair_instructions
 
     cont = f"""
-MIGRATION_RULES_FOR_EACH_DEPENDENCY:
-{json.dumps(rules, indent=2)}
+    MIGRATION_RULES_FOR_EACH_DEPENDENCY:
+    {json.dumps(rules, indent=2)}
 
-MATCHES_AND_AFFECTED_USAGES:
-{json.dumps(matches, indent=2)}
+    REPOSITORY_FILE_USAGES:
+    {json.dumps(repo_rules, indent=2, default=str)}
 
-CURRENT_DEPENDENCY_VERSIONS:
-{json.dumps(current_version, indent=2)}
+    AST_SYMBOLS_INDEX:
+    {json.dumps(symbols, indent=2, default=str)}
 
-TARGET_DEPENDENCY_VERSIONS:
-{json.dumps(target_version, indent=2)}
+    CROSS_FILE_RELATIONSHIPS:
+    {json.dumps(relationships, indent=2, default=str)}
 
-RAW_CODE_EXAMPLES_FOR_CONTEXT_NOT_AUTHORITATIVE_RULES:
-{json.dumps(raw_code_examples, indent=2, default=str)}
+    DEPENDENCIES_MAP:
+    {json.dumps(dependencies, indent=2, default=str)}
 
-REPAIR_CONTEXT:
-{json.dumps(repair_context, indent=2, default=str) if repair_context else "None"}
+    MATCHES_AND_AFFECTED_USAGES:
+    {json.dumps(matches, indent=2)}
 
-CURRENT SOURCE CODE TO MIGRATE OR REPAIR:
-```python
-{code}
-```
+    CURRENT_DEPENDENCY_VERSIONS:
+    {json.dumps(current_version, indent=2)}
+
+    TARGET_DEPENDENCY_VERSIONS:
+    {json.dumps(target_version, indent=2)}
+
+    RAW_CODE_EXAMPLES_FOR_CONTEXT_NOT_AUTHORITATIVE_RULES:
+    {json.dumps(raw_code_examples, indent=2, default=str)}
+
+    REPAIR_CONTEXT:
+    {json.dumps(repair_context, indent=2, default=str) if repair_context else "None"}
+
+    CURRENT SOURCE CODE TO MIGRATE OR REPAIR:
+    ```python
+    {source_code}
+    ```
 
 Return ONLY the complete Python source code.
 """
@@ -195,21 +209,21 @@ Return ONLY the complete Python source code.
             for attempt in repair_context.get("previous_attempts", [])
             if attempt.get("source_code")
         }
-        if clean == code:
+        if clean == source_code:
             print("❌ Repair returned unchanged source; rejecting candidate.")
-            return code
+            return source_code
         if clean in failed_sources:
             print("❌ Repair repeated a previously failed source; rejecting candidate.")
-            return code
+            return source_code
 
-    with open(source_code, "w") as f:
-        f.write(clean)
+    # with open(source_code, "w") as f:
+    #     f.write(clean)
 
     return clean
 
 
 def scraper(pkg_name: str, current_version: str, target_version: str,
-            stage0_symbols: set[str], parses: list[dict], composed_rules, doc_text, raw_code_examples):
+            stage0_symbols: set[str], parses: list[dict], composed_rules, doc_text, raw_code_examples, source_file):
     """
     Runs Stages 1-3 for one package. Returns is_genuinely_complete now too —
     previously computed here but never returned, so pipeline.py had no way
@@ -298,7 +312,7 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
     print("\n==================================================")
     print("--- [Stage 3] Matching Usages & Patching Code ---")
     print("==================================================")
-    report = man_extract(relevant_rules, parses)
+    report = man_extract(relevant_rules, parses, source_file)
 
     print(report, relevant_rules, raw_code_examples)
 
