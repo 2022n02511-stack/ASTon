@@ -209,7 +209,7 @@ Return ONLY the complete Python source code.
 
 
 def scraper(pkg_name: str, current_version: str, target_version: str,
-            stage0_symbols: set[str], parses: list[dict]):
+            stage0_symbols: set[str], parses: list[dict], composed_rules, doc_text, raw_code_examples):
     """
     Runs Stages 1-3 for one package. Returns is_genuinely_complete now too —
     previously computed here but never returned, so pipeline.py had no way
@@ -219,10 +219,10 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
     print("--- [Stage 1] Multi-Boundary Chain Ingestion ---")
     print("==================================================")
 
-    composed_rules, doc_text, raw_code_examples = run_stage1_pipeline(
-        pkg_name, current_version=current_version,
-        target_version=target_version, stage0_symbols=stage0_symbols,
-    )
+    # composed_rules, doc_text, raw_code_examples = run_stage1_pipeline(
+    #     pkg_name, current_version=current_version,
+    #     target_version=target_version, stage0_symbols=stage0_symbols,
+    # )
 
     for rule in composed_rules:
         old_api = str(rule.get("old_api", "")).lower()
@@ -302,4 +302,4 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
 
     print(report, relevant_rules, raw_code_examples)
 
-    return report, relevant_rules, raw_code_examples, doc_text, is_genuinely_complete
+    return report, relevant_rules, is_genuinely_complete
