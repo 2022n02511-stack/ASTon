@@ -2,7 +2,7 @@ from pathlib import Path
 from aston.scanner import parser
 from aston.watcher import watcher
 import json
-from aston.pipeline import run_for_repo
+from aston.pipeline import run_for_repo, repair_file
 from aston.ingestion import run_stage1_pipeline
 from aston.cli_ui.rich import print_rich_aston_banner, run_with_animation, print_aston_banner
 from aston.axios import scraper
@@ -138,6 +138,7 @@ def migrate_repo(path: str):
 
     # 2. Build migrations dictionary
     migrations = {}
+    file_contexts = {}
 
     for module, dep_data in repo_index.get("dependencies", {}).items():
         declared_version = dep_data.get('declared', {}).get('version')
@@ -208,18 +209,56 @@ def migrate_repo(path: str):
 
         source_code = py_file.read_text(encoding='utf-8')
 
-        run_for_repo(
-            str(root), 
-            relative_path, 
-            rules, 
-            symbols, 
-            relationships, 
-            dependencies, 
-            source_code, 
-            temp_req_path, 
-            passed_files, 
-            failed_files
+        success, context_data = run_for_repo(
+            root_path=str(root),
+            path=relative_path,
+            rules=file_data.get('usages', []),
+            symbols=repo_index.get('symbols', {}),
+            relationships=repo_index.get('relationships', []),
+            dependencies=repo_index.get('dependencies', {}),
+            source_code=source_code,
+            temp_req_path=temp_req_path,
+            passed_files=passed_files,
+            failed_files=failed_files
         )
+
+        # Save context for potential retries later
+        file_contexts[relative_path] = context_data
+
+        if failed_files:
+            print(f"\n🔄 Starting 2-Attempt Repair Loop for {len(failed_files)} failed file(s)...")
+            
+            still_failed = []
+            for path in failed_files.copy():
+                print(f"\n[Running Repair Loop]: {path}")
+                context_data = file_contexts.get(path)
+
+                if not context_data:
+                    still_failed.append(path)
+                    continue
+
+                # Run only the repair loop 2 times using the stored context
+                recovered = repair_file(path, temp_req_path, context_data, max_retries=2)
+
+                if recovered:
+                    passed_files.remove(path) if path in passed_files else None # just in case
+                    passed_files.append(path)
+                else:
+                    still_failed.append(path)
+
+                failed_files = still_failed
+
+        # Final Summary & Exit Check
+        print(f"\n📊 Final Migration Summary — Passed: {len(passed_files)}, Failed: {len(failed_files)}")
+
+        if failed_files:
+            print("\n❌ Permanent Migration Failures Detected:")
+            for failed_path in failed_files:
+                print(f"   • File Path: {failed_path}")
+            print("\nExiting due to unresolved migration errors.")
+            exit(1)
+        else:
+            print("\n🎉 All files migrated successfully!")
 
 
 
