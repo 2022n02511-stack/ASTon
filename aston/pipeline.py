@@ -179,7 +179,7 @@ def run_for_repo(
             file_usages,
             composed_rules,
             doc_text,
-            path
+            source_file=path
         )
 
         if not is_complete:

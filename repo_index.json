@@ -1,0 +1,260 @@
+{
+   "schema_version": "1.1",
+   "repository": {
+      "root": "demo",
+      "language": "python",
+      "index_status": "complete"
+   },
+   "dependencies": {
+      "openai": {
+         "declared": {
+            "specifier": "openai==0.28.1",
+            "version": "0.28.1",
+            "source_file": "requirements.txt",
+            "source_type": "requirements"
+         },
+         "resolved": null,
+         "installed": null,
+         "target_version": "3.39.0",
+         "provenance_status": "declared"
+      },
+      "requests": {
+         "declared": {
+            "specifier": "requests>=2.31,<3",
+            "version": null,
+            "source_file": "requirements.txt",
+            "source_type": "requirements"
+         },
+         "resolved": null,
+         "installed": null,
+         "target_version": "2.34.2",
+         "provenance_status": "declared"
+      }
+   },
+   "symbols": {
+      "app.py::main": {
+         "file": "app.py",
+         "qualified_name": "main",
+         "kind": "function",
+         "line_start": 16,
+         "line_end": 23,
+         "parameters": [],
+         "reach": "unknown",
+         "watched_usage_ids": []
+      },
+      "services/chat_service.py::ask_assistant": {
+         "file": "services/chat_service.py",
+         "qualified_name": "ask_assistant",
+         "kind": "function",
+         "line_start": 6,
+         "line_end": 16,
+         "parameters": [
+            "prompt"
+         ],
+         "reach": "unknown",
+         "watched_usage_ids": [
+            "services/chat_service.py:8:15"
+         ]
+      },
+      "utils/legacy_embeddings.py::embed_text": {
+         "file": "utils/legacy_embeddings.py",
+         "qualified_name": "embed_text",
+         "kind": "function",
+         "line_start": 6,
+         "line_end": 12,
+         "parameters": [
+            "text"
+         ],
+         "reach": "unknown",
+         "watched_usage_ids": [
+            "utils/legacy_embeddings.py:8:15"
+         ]
+      }
+   },
+   "relationships": [
+      {
+         "kind": "local_call",
+         "source_file": "app.py",
+         "source_symbol": "main",
+         "line": 18,
+         "column": 13,
+         "end_line": 18,
+         "end_column": 34,
+         "target_file": "services/chat_service.py",
+         "target_symbol": "ask_assistant",
+         "resolution_status": "resolved"
+      },
+      {
+         "kind": "local_call",
+         "source_file": "app.py",
+         "source_symbol": "main",
+         "line": 19,
+         "column": 13,
+         "end_line": 19,
+         "end_column": 31,
+         "target_file": "utils/legacy_embeddings.py",
+         "target_symbol": "embed_text",
+         "resolution_status": "resolved"
+      },
+      {
+         "kind": "local_call",
+         "source_file": "app.py",
+         "source_symbol": "main",
+         "line": 21,
+         "column": 4,
+         "end_line": 21,
+         "end_column": 32,
+         "target_file": null,
+         "target_symbol": null,
+         "resolution_status": "unresolved",
+         "reason": "unknown_symbol"
+      },
+      {
+         "kind": "local_call",
+         "source_file": "app.py",
+         "source_symbol": "main",
+         "line": 22,
+         "column": 4,
+         "end_line": 22,
+         "end_column": 17,
+         "target_file": null,
+         "target_symbol": null,
+         "resolution_status": "unresolved",
+         "reason": "unknown_symbol"
+      },
+      {
+         "kind": "local_call",
+         "source_file": "app.py",
+         "source_symbol": "main",
+         "line": 23,
+         "column": 4,
+         "end_line": 23,
+         "end_column": 49,
+         "target_file": null,
+         "target_symbol": null,
+         "resolution_status": "unresolved",
+         "reason": "unknown_symbol"
+      },
+      {
+         "kind": "local_call",
+         "source_file": "app.py",
+         "source_symbol": "main",
+         "line": 23,
+         "column": 35,
+         "end_line": 23,
+         "end_column": 46,
+         "target_file": null,
+         "target_symbol": null,
+         "resolution_status": "unresolved",
+         "reason": "unknown_symbol"
+      }
+   ],
+   "files": {
+      "app.py": {
+         "parse_status": "success",
+         "sha256": "5157002d89ed5071c24c7f13d2afba81366b45cf71ea49c2d17afdefcebaac31",
+         "imports": [
+            {
+               "module": "os",
+               "imported_name": null,
+               "alias": null,
+               "line": 3,
+               "import_type": "module"
+            },
+            {
+               "module": "openai",
+               "imported_name": null,
+               "alias": null,
+               "line": 4,
+               "import_type": "module"
+            },
+            {
+               "module": "services.chat_service",
+               "imported_name": "ask_assistant",
+               "alias": null,
+               "line": 6,
+               "import_type": "from_import"
+            },
+            {
+               "module": "utils.legacy_embeddings",
+               "imported_name": "embed_text",
+               "alias": null,
+               "line": 7,
+               "import_type": "from_import"
+            }
+         ],
+         "usages": [],
+         "diagnostics": []
+      },
+      "services/chat_service.py": {
+         "parse_status": "success",
+         "sha256": "ac4048e47795ffe8e6030a57624306bd08c1970044655ed6f963348a12e8ac40",
+         "imports": [
+            {
+               "module": "openai",
+               "imported_name": null,
+               "alias": null,
+               "line": 3,
+               "import_type": "module"
+            }
+         ],
+         "usages": [
+            {
+               "id": "services/chat_service.py:8:15",
+               "package": "openai",
+               "imported": "openai",
+               "local_alias": "openai",
+               "api_usage": "openai.ChatCompletion.create",
+               "result_use": "assigned",
+               "enclosing_symbol": "ask_assistant",
+               "line": 8,
+               "column": 15,
+               "end_line": 15,
+               "end_column": 5,
+               "usage_kind": "call",
+               "kwargs": {
+                  "model": "\"gpt-3.5-turbo\"",
+                  "messages": "[\n        {\"role\": \"system\", \"content\": \"You are a concise assistant.\"},\n        {\"role\": \"user\", \"content\": prompt},\n    ]",
+                  "temperature": "0.2"
+               }
+            }
+         ],
+         "diagnostics": []
+      },
+      "utils/legacy_embeddings.py": {
+         "parse_status": "success",
+         "sha256": "66663b0c9ca4210acea2dc93293def010e4f87e9f9beb3cf9abdba179a991037",
+         "imports": [
+            {
+               "module": "openai",
+               "imported_name": null,
+               "alias": null,
+               "line": 3,
+               "import_type": "module"
+            }
+         ],
+         "usages": [
+            {
+               "id": "utils/legacy_embeddings.py:8:15",
+               "package": "openai",
+               "imported": "openai",
+               "local_alias": "openai",
+               "api_usage": "openai.Embedding.create",
+               "result_use": "assigned",
+               "enclosing_symbol": "embed_text",
+               "line": 8,
+               "column": 15,
+               "end_line": 11,
+               "end_column": 5,
+               "usage_kind": "call",
+               "kwargs": {
+                  "model": "\"text-embedding-ada-002\"",
+                  "input": "text"
+               }
+            }
+         ],
+         "diagnostics": []
+      }
+   },
+   "diagnostics": []
+}

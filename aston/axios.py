@@ -223,7 +223,7 @@ Return ONLY the complete Python source code.
 
 
 def scraper(pkg_name: str, current_version: str, target_version: str,
-            stage0_symbols: set[str], parses: list[dict], composed_rules, doc_text, raw_code_examples, source_file):
+            stage0_symbols: set[str], parses: list[dict], composed_rules, doc_text, source_file):
     """
     Runs Stages 1-3 for one package. Returns is_genuinely_complete now too —
     previously computed here but never returned, so pipeline.py had no way
@@ -314,6 +314,6 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
     print("==================================================")
     report = man_extract(relevant_rules, parses, source_file)
 
-    print(report, relevant_rules, raw_code_examples)
+    print(report, relevant_rules)
 
     return report, relevant_rules, is_genuinely_complete

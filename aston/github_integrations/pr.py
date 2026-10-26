@@ -9,6 +9,51 @@ load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_API = "https://api.github.com"
 
+# def clone_repo_from_github(github_repo: str, target_dir: str = "./workspace") -> Path | None:
+#     """
+#     Clones a GitHub repository locally using the GITHUB_TOKEN for authentication.
+#     Example github_repo: 'octocat/Hello-World' or full URL.
+#     """
+#     target_path = Path(target_dir).expanduser().resolve()
+#     target_path.mkdir(parents=True, exist_ok=True)
+
+#     # Normalize inputs like 'https://github.com/owner/repo.git' down to 'owner/repo'
+#     clean_slug = github_repo.strip()
+#     if "github.com" in clean_slug:
+#         clean_slug = clean_slug.rstrip("/").removesuffix(".git")
+#         clean_slug = "/".join(clean_slug.split("/")[-2:])
+
+#     # Construct authenticated clone URL if token exists
+#     if GITHUB_TOKEN:
+#         clone_url = f"https://x-access-token:{GITHUB_TOKEN}@github.com/{clean_slug}.git"
+#     else:
+#         clone_url = f"https://github.com/{clean_slug}.git"
+
+#     repo_folder_name = clean_slug.split("/")[-1]
+#     repo_local_path = target_path / repo_folder_name
+
+#     # If already cloned, pull latest changes; otherwise clone fresh
+#     if repo_local_path.exists() and (repo_local_path / ".git").exists():
+#         print(f"📥 Repository already exists locally at {repo_local_path}. Pulling latest changes...")
+#         try:
+#             subprocess.run(["git", "pull"], cwd=repo_local_path, check=True, text=True, capture_output=True)
+#         except subprocess.CalledProcessError as e:
+#             print(f"⚠️ Warning: 'git pull' failed: {e.stderr.strip()}. Continuing with existing local state.")
+#     else:
+#         print(f"📥 Cloning repository '{clean_slug}' into {repo_local_path}...")
+#         result = subprocess.run(
+#             ["git", "clone", clone_url, str(repo_local_path)],
+#             stdout=subprocess.PIPE,
+#             stderr=subprocess.PIPE,
+#             text=True
+#         )
+#         if result.returncode != 0:
+#             print(f"❌ Failed to clone repository: {result.stderr.strip()}")
+#             return None
+
+#     print(f"✅ Successfully prepared repository at: {repo_local_path}")
+#     return repo_local_path
+
 def _github_headers() -> dict[str, str]:
     headers = {
         "Accept": "application/vnd.github+json",

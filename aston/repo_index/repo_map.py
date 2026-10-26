@@ -6,11 +6,10 @@ from aston.pipeline import run_for_repo, repair_file
 from aston.ingestion import run_stage1_pipeline
 from aston.cli_ui.rich import print_rich_aston_banner, run_with_animation, print_aston_banner
 from aston.axios import scraper
-from repo_verification import verify_full_repo_in_docker
+from aston.repo_verification import verify_full_repo_in_docker
 from aston.github_integrations.pr import create_migration_pr
 from aston.ingestion import resolve_github_repo
 from uuid import uuid4
-
 
 
 def repo_map(repo_path: str) -> dict:
@@ -324,7 +323,27 @@ def migrate_repo(path: str):
         else:
             print("PR skipped.")
 
+# def run_migration_for_github_repo(github_repo: str, workspace: str = "./workspace"):
+#     """
+#     1. Fetches/clones the repository from GitHub.
+#     2. Runs the complete Aston migration pipeline.
+#     """
+#     print(f"🚀 Starting Aston Pipeline for GitHub target: {github_repo}")
+    
+#     # Step 1: Clone or fetch the repo
+#     repo_local_path = clone_repo_from_github(github_repo, target_dir=workspace)
+#     if not repo_local_path:
+#         print("❌ Aborting migration due to repository fetch failure.")
+#         return False
 
+#     # Step 2: Feed the local path directly into your migration pipeline
+#     try:
+#         migrate_repo(str(repo_local_path))
+#         print(f"🎉 Migration workflow completed successfully for {github_repo}!")
+#         return True
+#     except Exception as e:
+#         print(f"❌ Migration pipeline crashed with error: {e}")
+#         raise e
 
 
 
