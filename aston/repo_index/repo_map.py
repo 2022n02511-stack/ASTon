@@ -136,6 +136,7 @@ def migrate_repo(path: str):
 
     # 1. Generate and save repo index
     repo_index = repo_map(path)
+    print(repo_index)
 
     with open('repo_index.json', 'w', encoding='utf-8') as f:
         json.dump(repo_index, f, indent=3)
@@ -155,6 +156,8 @@ def migrate_repo(path: str):
                 target_version, 
                 repo_index["symbols"]
             )
+            print("composed_rules: ", composed_rules)
+            print(raw_code_examples)
             
             migrations[module] = {
                 'composed_rules': composed_rules,

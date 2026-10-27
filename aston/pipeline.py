@@ -160,7 +160,7 @@ def run_for_repo(
 
     for module, mod_data in migrations.items():
         file_usages = repo_index.get("files", {}).get(path, {}).get("usages", [])
-        stage0_symbols = stage0(module, file_usages)
+        stage0_symbols = stage0(module, repo_index)
 
         dep_info = repo_index.get('dependencies', {}).get(module, {})
         current_version = dep_info.get('declared', {}).get('version', '0.0.0')

@@ -44,11 +44,26 @@ def clean_mistral_code(raw_response: str) -> str:
     return "\n".join(lines).strip()
 
 
-def stage0(package_name: str, parses: list[dict]) -> set[str]:
-    """Stage 0: the set of canonical usages this repo actually has for `package_name`."""
-    stage0_records = [p for p in parses if p["package"] == package_name]
+def stage0(package_name: str, repo_index: dict) -> set[str]:
+    """
+    Extracts canonical usages for `package_name` by traversing 
+    the repository index 'files' structure.
+    """
+    flattened_usages = []
+    
+    files_dict = repo_index.get("files", {})
+    for file_path, file_data in files_dict.items():
+        if isinstance(file_data, dict):
+            usages = file_data.get("usages", [])
+            flattened_usages.extend(usages)
+
+    # Filter records specifically for the target package
+    stage0_records = [p for p in flattened_usages if p.get("package") == package_name]
+    
+    # Generate canonical symbols (e.g., 'openai.ChatCompletion.create')
     dynamic_stage0_symbols = {canonicalize_usage(record) for record in stage0_records}
-    print(f" Dynamic AST Scanned Usages: {dynamic_stage0_symbols}")
+    
+    print(f"📁 Dynamic AST Scanned Usages for {package_name}: {dynamic_stage0_symbols}")
     return dynamic_stage0_symbols
 
 
@@ -222,23 +237,60 @@ Return ONLY the complete Python source code.
     return clean
 
 
-def scraper(pkg_name: str, current_version: str, target_version: str,
-            stage0_symbols: set[str], parses: list[dict], composed_rules, doc_text, source_file):
+
+def scraper(
+    pkg_name: str,
+    current_version: str,
+    target_version: str,
+    stage0_symbols: set[str],
+    parses: list[dict],
+    composed_rules: list[dict],
+    doc_text: str,
+    source_file: str,
+):
     """
-    Runs Stages 1-3 for one package. Returns is_genuinely_complete now too —
-    previously computed here but never returned, so pipeline.py had no way
-    to know coverage was incomplete and proceeded regardless.
+    Run migration-rule coverage auditing, targeted extraction, and matching.
+
+    Returns:
+        (report, relevant_rules, is_genuinely_complete)
     """
     print("\n==================================================")
     print("--- [Stage 1] Multi-Boundary Chain Ingestion ---")
     print("==================================================")
 
-    # composed_rules, doc_text, raw_code_examples = run_stage1_pipeline(
-    #     pkg_name, current_version=current_version,
-    #     target_version=target_version, stage0_symbols=stage0_symbols,
-    # )
+    from aston.relevance import normalize_api_symbol
 
-    for rule in composed_rules:
+    def normalize_set(values) -> set[str]:
+        """Normalize valid API symbols before set comparisons."""
+        if not values:
+            return set()
+
+        return {
+            normalize_api_symbol(value)
+            for value in values
+            if isinstance(value, str)
+            and normalize_api_symbol(value)
+        }
+
+    def rule_key(rule: dict) -> tuple:
+        """Deduplicate identical rules without discarding alternatives."""
+        return (
+            rule.get("package"),
+            normalize_api_symbol(rule.get("old_api") or ""),
+            normalize_api_symbol(rule.get("new_api") or ""),
+            rule.get("from_version"),
+            rule.get("to_version"),
+            rule.get("migration_type"),
+        )
+
+    working_rules = [
+        dict(rule)
+        for rule in (composed_rules or [])
+        if isinstance(rule, dict)
+    ]
+    working_doc_text = doc_text or ""
+
+    for rule in working_rules:
         old_api = str(rule.get("old_api", "")).lower()
         if "proxy" in old_api or "api_key" in old_api:
             print(
@@ -246,74 +298,177 @@ def scraper(pkg_name: str, current_version: str, target_version: str,
                 json.dumps(rule, indent=2, default=str),
             )
 
-    if not composed_rules:
-        print("⚠️ Warning: No migration rules extracted across the version chain!")
-        return [], [], False
+    print("\n========== STAGE 2: INITIAL AUDIT ==========")
+    print("STAGE 0 SYMBOLS:", sorted(stage0_symbols))
+    print("INITIAL RULE COUNT:", len(working_rules))
 
-    print("\n========== STAGE 2 DEBUG ==========")
+    audit = evaluate_relevance_and_completeness(
+        stage0_symbols,
+        working_rules,
+        working_doc_text,
+    )
 
-    print("\nSTAGE 0 SYMBOLS:")
-    print(sorted(stage0_symbols))
+    observed_symbols = normalize_set(stage0_symbols)
+    directly_covered = normalize_set(
+        audit.get("directly_covered_symbols", [])
+    )
+    already_target = normalize_set(
+        audit.get("already_target_symbols", [])
+    )
 
-    print("\nCOMPOSED RULE COUNT:")
-    print(len(composed_rules))
+    # Gather every symbol the audit explicitly identifies as uncovered,
+    # missing, or unclassified.
+    targeted_symbols = set()
 
-    print("\nCOMPOSED RULE SAMPLE:")
-    print(json.dumps(composed_rules[:10], indent=2, default=str))
+    for field in (
+        "missing_symbols",
+        "uncovered_symbols",
+        "unclassified_symbols",
+    ):
+        targeted_symbols.update(normalize_set(audit.get(field, [])))
 
-    print("\nRULE OLD_API VALUES:")
-    print([
-        rule.get("old_api")
-        for rule in composed_rules
-    ])
+    # Defensive fallback: do not silently omit observed APIs from targeted
+    # extraction just because the audit omitted them from its output lists.
+    #
+    # already_target is excluded here only because the audit classifies it
+    # separately. That classification must be based on actual target-version
+    # compatibility evidence, not merely a matching new_api string.
+    targeted_symbols.update(
+        observed_symbols - directly_covered - already_target
+    )
+
+    if targeted_symbols:
+        print("\n==================================================")
+        print("--- [Stage 2.5] Targeted Rule Extraction ---")
+        print("==================================================")
+        print("FOCUS SYMBOLS:", sorted(targeted_symbols))
+
+        try:
+            extra_rules, extra_doc_text, extra_examples = (
+                run_stage1_pipeline(
+                    pkg_name,
+                    current_version=current_version,
+                    target_version=target_version,
+                    stage0_symbols=targeted_symbols,
+                )
+            )
+
+            extra_rules = extra_rules or []
+            existing_keys = {
+                rule_key(rule)
+                for rule in working_rules
+            }
+
+            added_count = 0
+
+            for rule in extra_rules:
+                if not isinstance(rule, dict):
+                    continue
+
+                candidate = dict(rule)
+                key = rule_key(candidate)
+
+                if key not in existing_keys:
+                    working_rules.append(candidate)
+                    existing_keys.add(key)
+                    added_count += 1
+
+            if extra_doc_text:
+                working_doc_text = (
+                    working_doc_text
+                    + "\n\n"
+                    + extra_doc_text
+                ).strip()
+
+            print("TARGETED CANDIDATES RETURNED:", len(extra_rules))
+            print("NEW DISTINCT RULES ADDED:", added_count)
+
+            if extra_examples:
+                print(
+                    "TARGETED EXTRACTION ALSO RETURNED EXAMPLES:",
+                    len(extra_examples),
+                )
+
+        except Exception as exc:
+            print(
+                "⚠️ Targeted extraction failed:",
+                repr(exc),
+            )
+
+        # Re-evaluate coverage using the expanded rules and documentation.
+        audit = evaluate_relevance_and_completeness(
+            stage0_symbols,
+            working_rules,
+            working_doc_text,
+        )
 
     print("\n==================================================")
-    print("--- [Stage 2] Relevance & Completeness Audit ---")
+    print("--- [Stage 2] Final Relevance & Completeness Audit ---")
     print("==================================================")
-    audit = evaluate_relevance_and_completeness(stage0_symbols, composed_rules, doc_text)
-
-    print("OBSERVED:", sorted(stage0_symbols))
-    print("RELEVANT:", [
-        r["old_api"] for r in audit["relevant_records"]
-    ])
-    print("MISSING:", sorted(audit["missing_symbols"]))
-
-    print("\nAUDIT RESULT:")
+    print("OBSERVED:", sorted(observed_symbols))
+    print("TOTAL RULES:", len(working_rules))
+    print(
+        "RELEVANT:",
+        [
+            rule.get("old_api")
+            for rule in audit.get("relevant_records", [])
+        ],
+    )
+    print("MISSING:", sorted(normalize_set(audit.get("missing_symbols", []))))
+    print("UNCOVERED:", sorted(normalize_set(audit.get("uncovered_symbols", []))))
+    print(
+        "UNCLASSIFIED:",
+        sorted(normalize_set(audit.get("unclassified_symbols", []))),
+    )
+    print("\nFINAL AUDIT RESULT:")
     print(json.dumps(audit, indent=2, default=str))
 
-    # Generalized replacement for the old hardcoded ".chat.completions.create"
-    # suffix check: a scanned symbol isn't "missing a rule" if it already
-    # matches some rule's new_api — it's already migrated, not unmigrated.
+    relevant_rules = audit.get("relevant_records", [])
 
-    already_migrated_targets = {
-        r.get("new_api") for r in composed_rules if r.get("new_api")
-    }
-    raw_missing = audit.get("missing_symbols", [])
-    filtered_missing = [sym for sym in raw_missing if sym not in already_migrated_targets]
+    missing = normalize_set(audit.get("missing_symbols", []))
+    uncovered = normalize_set(audit.get("uncovered_symbols", []))
+    unclassified = normalize_set(audit.get("unclassified_symbols", []))
 
-    print(f" Expected Affected Symbols: {audit['expected_affected_symbols']}")
-    print(f" Missing Symbols: {audit['missing_symbols']}")
+    # Require both the audit's decision and empty unresolved-coverage sets.
+    is_genuinely_complete = (
+        bool(audit.get("is_complete", False))
+        and not missing
+        and not uncovered
+        and not unclassified
+    )
 
-    is_genuinely_complete = len(filtered_missing) == 0
+    print("\n========== FINAL COVERAGE STATUS ==========")
+    print("Complete:", is_genuinely_complete)
+
     if not is_genuinely_complete:
-        print(f"🚨 WARNING: Genuinely missing rule extractions detected: {filtered_missing}")
+        print("🚨 Migration coverage remains incomplete.")
     else:
-        print("✅ Extraction Completeness Audit Passed (ignoring already-migrated calls)!")
+        print("✅ Migration coverage audit passed.")
 
-    relevant_rules = audit["relevant_records"]
+    # Save the rules actually selected by the final audit.
+    with open("changes.json", "w", encoding="utf-8") as f:
+        json.dump(relevant_rules, f, indent=2, default=str)
 
-    # print(relevant_rules)
-
-
-    with open("changes.json", "w") as f:
-        json.dump(relevant_rules, f, indent=2)
-    print("📁 Canonical contract saved to changes.json")
+    print("📁 Canonical contract saved in changes.json")
 
     print("\n==================================================")
-    print("--- [Stage 3] Matching Usages & Patching Code ---")
+    print("--- [Stage 3] Matching Usages ---")
     print("==================================================")
-    report = man_extract(relevant_rules, parses, source_file)
 
-    print(report, relevant_rules)
+    report = man_extract(
+        relevant_rules,
+        parses,
+        source_file,
+    )
+
+    print("MATCHED USAGES:", len(report))
+    print("RELEVANT RULES:", len(relevant_rules))
+
+    if relevant_rules and not report:
+        print(
+            "⚠️ Rules were selected, but none matched the canonical "
+            "AST usages. Check package names and old_api normalization."
+        )
 
     return report, relevant_rules, is_genuinely_complete
+
