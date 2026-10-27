@@ -17,17 +17,22 @@ def normalize_api_symbol(symbol: str) -> str:
 
 def canonicalize_usage(record: dict) -> str:
     """
-    Convert a locally aliased API usage to its package-qualified form.
+    Convert a locally aliased API usage to its fully qualified form,
+    correctly resolving from-imports using the explicit 'imported' field.
     """
     package = record.get("package")
     alias = record.get("local_alias")
+    imported = record.get("imported")
     usage = record.get("api_usage", "")
 
     if not isinstance(usage, str):
         return ""
 
-    if alias and package and usage.startswith(alias + "."):
-        return package + usage[len(alias):]
+    if alias and usage.startswith(alias + "."):
+        if imported:
+            return imported + usage[len(alias):]
+        elif package:
+            return package + usage[len(alias):]
 
     return usage
 
@@ -38,9 +43,6 @@ def determine_expected_affected_symbols(
 ) -> set[str]:
     """
     Find scanned symbols explicitly referenced in the migration text.
-
-    This is a documentation-based signal, not proof that a symbol
-    is affected or unaffected.
     """
     expected = set()
     doc_lower = (migration_doc_text or "").lower()
@@ -62,17 +64,27 @@ def determine_expected_affected_symbols(
     return expected
 
 
+def find_longest_prefix_match(symbol: str, rules_dict: dict) -> list[dict]:
+    """
+    Find matching rules using longest-prefix matching.
+    E.g., rule for 'openai.ChatCompletion' will match 'openai.ChatCompletion.create'.
+    """
+    # Sort old_apis by length descending so longer/more specific prefixes match first
+    sorted_old_apis = sorted(rules_dict.keys(), key=len, reverse=True)
+    for old_api in sorted_old_apis:
+        if symbol == old_api or symbol.startswith(old_api + "."):
+            return rules_dict[old_api]
+    return []
+
+
 def evaluate_relevance_and_completeness(
     stage0_symbols: set[str],
     extracted_records: list[dict],
     migration_doc_text: str,
 ) -> dict:
     """
-    Evaluate migration-rule coverage without assuming that an
-    undocumented symbol is safe or that every observed symbol is broken.
-
-    A rule is considered eligible for automatic coverage only when its
-    validation status permits automatic migration.
+    Evaluate migration-rule coverage using longest-prefix matching and
+    strict validated-only target sets.
     """
     observed_symbols = {
         normalize_api_symbol(symbol)
@@ -80,22 +92,23 @@ def evaluate_relevance_and_completeness(
         if normalize_api_symbol(symbol)
     }
 
-    # Index extracted rules by old API and collect target API names.
+    # Index extracted rules by old API
     old_to_records = {}
-    known_target_apis = set()
+    validated_target_apis = set()
+
+    auto_migration_statuses = {"validated", "valid"}
 
     for record in extracted_records or []:
         old_api = normalize_api_symbol(record.get("old_api", ""))
         new_api = normalize_api_symbol(record.get("new_api", ""))
+        status = str(record.get("validation_status", "")).strip().lower()
 
         if old_api:
             old_to_records.setdefault(old_api, []).append(record)
 
-        if new_api:
-            known_target_apis.add(new_api)
-
-    # Only validated rules are eligible for automatic migration.
-    auto_migration_statuses = {"validated", "valid"}
+        # Item 8: Build known target APIs ONLY from validated rules
+        if new_api and status in auto_migration_statuses:
+            validated_target_apis.add(new_api)
 
     relevant_records = []
     review_records = []
@@ -103,57 +116,46 @@ def evaluate_relevance_and_completeness(
     review_covered_symbols = set()
 
     for symbol in observed_symbols:
-        for record in old_to_records.get(symbol, []):
-            status = str(
-                record.get("validation_status", "")
-            ).strip().lower()
+        matching_records = find_longest_prefix_match(symbol, old_to_records)
+        if not matching_records:
+            continue
+
+        for record in matching_records:
+            status = str(record.get("validation_status", "")).strip().lower()
 
             if status in auto_migration_statuses:
                 relevant_records.append({
                     **record,
-                    "old_api": normalize_api_symbol(
-                        record.get("old_api", "")
-                    ),
+                    "old_api": normalize_api_symbol(record.get("old_api", "")),
                 })
                 directly_covered_symbols.add(symbol)
             else:
                 review_records.append({
                     **record,
-                    "old_api": normalize_api_symbol(
-                        record.get("old_api", "")
-                    ),
+                    "old_api": normalize_api_symbol(record.get("old_api", "")),
                 })
                 review_covered_symbols.add(symbol)
 
-    # A target API name alone is not proof of compatibility.
-    # Keep this as a candidate set until target compatibility has
-    # been independently established.
-    known_target_symbols = observed_symbols & known_target_apis
+    # Item 8: Target compatibility established strictly from validated rules
+    known_target_symbols = observed_symbols & validated_target_apis
 
-    # Documentation-based expectations are useful, but cannot account
-    # for every observed API.
     expected_affected_symbols = determine_expected_affected_symbols(
         observed_symbols,
         migration_doc_text,
     )
 
-    # Observed symbols lacking validated rules or independently
-    # established target compatibility remain uncovered.
     uncovered_symbols = (
         observed_symbols
         - directly_covered_symbols
         - known_target_symbols
     )
 
-    # Of the uncovered symbols, these are explicitly mentioned in docs.
     missing_documented_symbols = (
         expected_affected_symbols
         - directly_covered_symbols
         - known_target_symbols
     )
 
-    # An audit cannot prove completeness when symbols remain uncovered
-    # or review-only rules apply.
     is_complete = (
         not uncovered_symbols
         and not review_covered_symbols
@@ -162,17 +164,12 @@ def evaluate_relevance_and_completeness(
     return {
         "is_complete": is_complete,
         "observed_symbols": sorted(observed_symbols),
-        "expected_affected_symbols": sorted(
-            expected_affected_symbols
-        ),
-        "directly_covered_symbols": sorted(
-            directly_covered_symbols
-        ),
+        "expected_affected_symbols": sorted(expected_affected_symbols),
+        "directly_covered_symbols": sorted(directly_covered_symbols),
         "already_target_symbols": sorted(known_target_symbols),
         "review_covered_symbols": sorted(review_covered_symbols),
         "uncovered_symbols": sorted(uncovered_symbols),
         "missing_symbols": sorted(missing_documented_symbols),
-        "unclassified_symbols": sorted(uncovered_symbols),
         "relevant_records": relevant_records,
         "review_records": review_records,
     }
