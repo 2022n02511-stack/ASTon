@@ -333,6 +333,7 @@ def migrate_repo(path: str):
             exit(1)
 
         print("\n✅ Full-Repo Test Suite Passed Successfully (Exit Code 0)!")
+        print("Run, aston pr --path (path_value) for pr creation")
 
         # original_req_path = root / "requirements.txt"
         # if temp_req_path.exists():
