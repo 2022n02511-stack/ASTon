@@ -174,7 +174,7 @@
       },
       "services/chat_service.py": {
          "parse_status": "success",
-         "sha256": "ac4048e47795ffe8e6030a57624306bd08c1970044655ed6f963348a12e8ac40",
+         "sha256": "4c898fc0b163c7128f8fd1c0cce7f2f143f395d59e054217e5f52404e76f2c5e",
          "imports": [
             {
                "module": "openai",
@@ -209,7 +209,7 @@
       },
       "utils/legacy_embeddings.py": {
          "parse_status": "success",
-         "sha256": "66663b0c9ca4210acea2dc93293def010e4f87e9f9beb3cf9abdba179a991037",
+         "sha256": "f69e21c912ea404d34b53aa9c5e01ea85b8804a69e864bb087d6355f2eee1b74",
          "imports": [
             {
                "module": "openai",

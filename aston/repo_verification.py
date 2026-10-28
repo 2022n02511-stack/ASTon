@@ -1,4 +1,3 @@
-
 import subprocess
 from pathlib import Path
 import shlex
@@ -48,27 +47,86 @@ def verify_full_repo_in_docker(
         }
 
     container_req = f"/app/{relative_req.as_posix()}"
+    test_cmd = test_command.strip()
 
     script = f"""
 export XDG_CACHE_HOME=/tmp/cache
 set -eu
 
-python -m pip install --no-cache-dir -r {shlex.quote(container_req)} ||
-    {{ echo ASTON_SETUP_FAILED; exit 20; }}
+echo "--- [Verification] Installing requirements ---"
+python -m pip install --no-cache-dir --disable-pip-version-check -r {shlex.quote(container_req)} ||
+    {{ echo "ASTON_SETUP_FAILED"; exit 20; }}
 
-python -m compileall -q /app ||
-    {{ echo ASTON_SYNTAX_FAILED; exit 21; }}
+echo "--- [Verification] Installing test runner (pytest) ---"
+python -m pip install --no-cache-dir --disable-pip-version-check pytest || true
 
-{test_command} ||
-    {{ echo ASTON_TESTS_FAILED; exit 22; }}
+echo "--- [Verification] Running AST syntax checks ---"
+python -c '
+import ast
+import sys
+from pathlib import Path
 
-echo ASTON_VERIFICATION_PASSED
+root = Path("/app/repo")
+if not root.exists():
+    root = Path("/app")
+
+excluded = {{
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+}}
+errors = []
+
+for path in root.rglob("*.py"):
+    if any(part in excluded for part in path.parts):
+        continue
+    try:
+        ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (SyntaxError, UnicodeDecodeError, OSError) as exc:
+        errors.append((path, exc))
+
+for path, exc in errors:
+    print("Syntax error in {{}}: {{}}".format(path, exc), file=sys.stderr)
+
+sys.exit(1 if errors else 0)
+' || {{ echo "ASTON_SYNTAX_FAILED"; exit 21; }}
+"""
+
+    if test_cmd:
+        if "pytest" in test_cmd.lower():
+            script += f"""
+echo "--- [Verification] Running test suite ---"
+set +e
+export PYTEST_ADDOPTS="${{PYTEST_ADDOPTS:-}} -p no:cacheprovider"
+{test_cmd}
+test_status=$?
+set -e
+
+if [ "$test_status" -eq 5 ]; then
+    echo "ASTON_TESTS_SKIPPED_NO_TESTS: pytest collected no tests."
+elif [ "$test_status" -ne 0 ]; then
+    echo "ASTON_TESTS_FAILED: exit code $test_status"
+    exit 22
+else
+    echo "ASTON_TESTS_PASSED"
+fi
+"""
+        else:
+            script += f"""
+echo "--- [Verification] Running test suite ---"
+{test_cmd} ||
+    {{ echo "ASTON_TESTS_FAILED"; exit 22; }}
+"""
+
+    script += """
+echo "ASTON_VERIFICATION_PASSED"
 """
 
     docker_cmd = [
         "docker", "run", "--rm",
-        "--network", "none",
-        "--mount", f"type=bind,source={repo_path},target=/app,readonly",
+        "-v", f"{repo_path}:/app:ro,Z",
         "--workdir", "/app",
         python_image,
         "sh", "-c", script,

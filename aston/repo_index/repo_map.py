@@ -169,29 +169,74 @@ def migrate_repo(path: str):
         json.dump(migrations, f, indent=3)
 
     # 3. Setup temporary requirements.txt
-    temp_req_path = Path("temp_requirements.txt")
-    original_req_path = Path(str(root)) / "requirements.txt"
     
-    req_lines = original_req_path.read_text(encoding='utf-8').splitlines() if original_req_path.exists() else []
-    
-    for module, dep_data in repo_index.get('dependencies', {}).items():
-        target_ver = dep_data.get('target_version')
+    # 3. Build target requirements inside the repository.
+    root = Path(root).expanduser().resolve()
+
+    original_req_path = root / "requirements.txt"
+    temp_req_path = root / "temp_requirements.txt"
+
+    if not original_req_path.is_file():
+        raise FileNotFoundError(
+            f"Original requirements file not found: {original_req_path}"
+        )
+
+    req_lines = original_req_path.read_text(
+        encoding="utf-8"
+    ).splitlines()
+
+    for module, dep_data in repo_index.get("dependencies", {}).items():
+        target_ver = dep_data.get("target_version")
         if not target_ver:
             continue
-            
+
         new_req_line = f"{module}=={target_ver}"
         found = False
-        
+
         for i, line in enumerate(req_lines):
             cleaned = line.strip().lower()
-            if cleaned == module.lower() or cleaned.startswith(f"{module.lower()}==") or cleaned.startswith(f"{module.lower()}>="):
+
+            if (
+                cleaned == module.lower()
+                or cleaned.startswith(f"{module.lower()}==")
+                or cleaned.startswith(f"{module.lower()}>=")
+                or cleaned.startswith(f"{module.lower()}<=")
+                or cleaned.startswith(f"{module.lower()}~=")
+                or cleaned.startswith(f"{module.lower()}!=")
+                or cleaned.startswith(f"{module.lower()}<")
+                or cleaned.startswith(f"{module.lower()}>")
+            ):
                 req_lines[i] = new_req_line
                 found = True
                 break
+
         if not found:
             req_lines.append(new_req_line)
-            
-    temp_req_path.write_text("\n".join(req_lines) + "\n", encoding='utf-8')    
+
+    temp_req_path.write_text(
+        "\n".join(req_lines) + "\n",
+        encoding="utf-8",
+    )
+
+    # Save target requirements alongside successful migration artifacts.
+    # Keep the temporary requirements file for Docker verification for now.
+    success_root = Path("succ_migrations").resolve()
+    success_root.mkdir(parents=True, exist_ok=True)
+
+    success_req_path = success_root / "requirements.txt"
+    success_req_path.write_text(
+        temp_req_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    print(f"Target requirements saved to: {success_req_path}")
+
+    print(f"Original requirements: {original_req_path}")
+    print(f"Temporary requirements: {temp_req_path}")
+    print(f"Original exists: {original_req_path.is_file()}")
+    print(f"Temporary exists: {temp_req_path.is_file()}")
+    print(f"Generated requirements:\n{temp_req_path.read_text(encoding='utf-8')}")
+  
 
     # 4. Gather Python files and execute per-file pipeline
     py_files = [
@@ -289,42 +334,42 @@ def migrate_repo(path: str):
 
         print("\n✅ Full-Repo Test Suite Passed Successfully (Exit Code 0)!")
 
-        original_req_path = root / "requirements.txt"
-        if temp_req_path.exists():
-            original_req_path.write_text(temp_req_path.read_text(encoding="utf-8"), encoding="utf-8")
-            print(f"✅ Successfully updated original requirements.txt")
+        # original_req_path = root / "requirements.txt"
+        # if temp_req_path.exists():
+        #     original_req_path.write_text(temp_req_path.read_text(encoding="utf-8"), encoding="utf-8")
+        #     print(f"✅ Successfully updated original requirements.txt")
 
-        print("Want to create PR[Y/N]?")
-        gross = ['YES', 'yes', 'y', 'Y']
-        ans = input()
-        if ans in gross:
+        # print("Want to create PR[Y/N]?")
+        # gross = ['YES', 'yes', 'y', 'Y']
+        # ans = input()
+        # if ans in gross:
         
 
-            # =========================================================================
-            # STEP 4: AUTOMATED PULL REQUEST CREATION
-            # =========================================================================
-            github_repo = resolve_github_repo(list(repo_index.get("dependencies", {}).keys())[0])
-            if github_repo:
-                branch_id = uuid4().hex[:8]
-                branch_name = f"aston/automated-migration-{branch_id}"
-                title = "chore(deps): automated dependency migration via Aston"
-                body = (
-                    "### 🤖 Automated Dependency Upgrade\n\n"
-                    "Aston successfully migrated this repository and verified system behavior.\n"
-                    f"- **Migrated Files:** {len(passed_files)}\n"
-                    f"- **File-Level Checks:** Passed (Docker isolated syntax/import checks)\n"
-                    f"- **Repo-Wide Verification:** Passed (`pytest` integration gate passed successfully)"
-                )
+        #     # =========================================================================
+        #     # STEP 4: AUTOMATED PULL REQUEST CREATION
+        #     # =========================================================================
+        #     github_repo = resolve_github_repo(list(repo_index.get("dependencies", {}).keys())[0])
+        #     if github_repo:
+        #         branch_id = uuid4().hex[:8]
+        #         branch_name = f"aston/automated-migration-{branch_id}"
+        #         title = "chore(deps): automated dependency migration via Aston"
+        #         body = (
+        #             "### 🤖 Automated Dependency Upgrade\n\n"
+        #             "Aston successfully migrated this repository and verified system behavior.\n"
+        #             f"- **Migrated Files:** {len(passed_files)}\n"
+        #             f"- **File-Level Checks:** Passed (Docker isolated syntax/import checks)\n"
+        #             f"- **Repo-Wide Verification:** Passed (`pytest` integration gate passed successfully)"
+        #         )
                 
-                create_migration_pr(
-                    repo_path=str(root),
-                    github_repo=github_repo,
-                    branch_name=branch_name,
-                    title=title,
-                    body=body
-                )
-        else:
-            print("PR skipped.")
+        #         create_migration_pr(
+        #             repo_path=str(root),
+        #             github_repo=github_repo,
+        #             branch_name=branch_name,
+        #             title=title,
+        #             body=body
+        #         )
+        # else:
+        #     print("PR skipped.")
 
 # def run_migration_for_github_repo(github_repo: str, workspace: str = "./workspace"):
 #     """
