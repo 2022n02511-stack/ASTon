@@ -1,0 +1,399 @@
+from pathlib import Path
+from aston.scanner import parser
+from aston.watcher import watcher
+import json
+from aston.pipeline import run_for_repo, repair_file
+from aston.ingestion import run_stage1_pipeline
+from aston.cli_ui.rich import print_rich_aston_banner, run_with_animation, print_aston_banner
+from aston.axios import scraper
+from aston.repo_verification import verify_full_repo_in_docker
+from aston.github_integrations.pr import create_migration_pr
+from aston.ingestion import resolve_github_repo
+from uuid import uuid4
+
+
+def repo_map(repo_path: str) -> dict:
+    rel_path = Path(repo_path)
+    root = rel_path.expanduser().resolve()
+
+    dependencies = watcher(repo_path)
+    
+    all_files_data = {}
+    global_symbols = {}
+    all_local_calls = []
+    all_diagnostics = []
+
+    py_files = [
+        f for f in root.rglob("*.py") 
+        if f.name != "__init__.py"
+    ]
+
+    for py_file in py_files:
+        relative_path = str(py_file.relative_to(root))
+        parsed = parser(py_file, relative_path=relative_path)
+        
+        all_files_data[relative_path] = {
+            "parse_status": parsed["file_meta"]["parse_status"],
+            "sha256": parsed["file_meta"]["sha256"],
+            "imports": parsed["imports"],
+            "usages": parsed["usages"],
+            "diagnostics": parsed["diagnostics"]
+        }
+        
+        global_symbols.update(parsed["symbols"])
+        all_local_calls.extend(parsed["local_calls"])
+        all_diagnostics.extend(parsed["diagnostics"])
+
+    # Populate watched_usage_ids into symbols based on direct usages
+    for file_path, file_data in all_files_data.items():
+        for usage in file_data["usages"]:
+            enclosing = usage.get("enclosing_symbol")
+            if enclosing:
+                sym_key = f"{file_path}::{enclosing}"
+                if sym_key in global_symbols:
+                    if usage["id"] not in global_symbols[sym_key]["watched_usage_ids"]:
+                        global_symbols[sym_key]["watched_usage_ids"].append(usage["id"])
+
+    # Resolve Relationships across files with correct span & classification
+    relationships = []
+    for call in all_local_calls:
+        target_symbol_key = None
+        target_file = None
+        
+        for sym_key, sym_data in global_symbols.items():
+            if sym_data["qualified_name"] == call["callee_name"]:
+                target_symbol_key = sym_data["qualified_name"]
+                target_file = sym_data["file"]
+                break
+
+        if call["is_parameter"]:
+            relationships.append({
+                "kind": "local_call",
+                "source_file": call["source_file"],
+                "source_symbol": call["source_symbol"],
+                "line": call["line"],
+                "column": call["column"],
+                "end_line": call["end_line"],
+                "end_column": call["end_column"],
+                "target_file": None,
+                "target_symbol": None,
+                "resolution_status": "unresolved",
+                "reason": "callee_is_parameter"
+            })
+        elif target_symbol_key and target_file:
+            relationships.append({
+                "kind": "local_call",
+                "source_file": call["source_file"],
+                "source_symbol": call["source_symbol"],
+                "line": call["line"],
+                "column": call["column"],
+                "end_line": call["end_line"],
+                "end_column": call["end_column"],
+                "target_file": target_file,
+                "target_symbol": target_symbol_key,
+                "resolution_status": "resolved"
+            })
+        else:
+            relationships.append({
+                "kind": "local_call",
+                "source_file": call["source_file"],
+                "source_symbol": call["source_symbol"],
+                "line": call["line"],
+                "column": call["column"],
+                "end_line": call["end_line"],
+                "end_column": call["end_column"],
+                "target_file": None,
+                "target_symbol": None,
+                "resolution_status": "unresolved",
+                "reason": "unknown_symbol"
+            })
+
+    repo_index = {
+        "schema_version": "1.1",
+        "repository": {
+            "root": root.name,
+            "language": "python",
+            "index_status": "complete"
+        },
+        "dependencies": dependencies,
+        "symbols": global_symbols,
+        "relationships": relationships,
+        "files": all_files_data,
+        "diagnostics": all_diagnostics
+    }
+
+    # print(json.dumps(repo_index, indent=3))
+
+    return repo_index
+
+# repo_map('./demo')
+
+def migrate_repo(path: str):
+    print_aston_banner()
+
+    rel_path = Path(path)
+    root = rel_path.expanduser().resolve()
+
+    # 1. Generate and save repo index
+    repo_index = repo_map(path)
+    print(repo_index)
+
+    with open('repo_index.json', 'w', encoding='utf-8') as f:
+        json.dump(repo_index, f, indent=3)
+
+    # 2. Build migrations dictionary
+    migrations = {}
+    file_contexts = {}
+
+    for module, dep_data in repo_index.get("dependencies", {}).items():
+        declared_version = dep_data.get('declared', {}).get('version')
+        target_version = dep_data.get('target_version')
+
+        if declared_version is not None:
+            composed_rules, doc_text, raw_code_examples = run_stage1_pipeline(
+                module, 
+                declared_version, 
+                target_version, 
+                repo_index["symbols"]
+            )
+            print("composed_rules: ", composed_rules)
+            print(raw_code_examples)
+            
+            migrations[module] = {
+                'composed_rules': composed_rules,
+                'doc_text': doc_text,
+                'raw_code_examples': raw_code_examples
+            }
+
+    with open('migrations.json', 'w', encoding='utf-8') as f:
+        json.dump(migrations, f, indent=3)
+
+    # 3. Setup temporary requirements.txt
+    
+    # 3. Build target requirements inside the repository.
+    root = Path(root).expanduser().resolve()
+
+    original_req_path = root / "requirements.txt"
+    temp_req_path = root / "temp_requirements.txt"
+
+    if not original_req_path.is_file():
+        raise FileNotFoundError(
+            f"Original requirements file not found: {original_req_path}"
+        )
+
+    req_lines = original_req_path.read_text(
+        encoding="utf-8"
+    ).splitlines()
+
+    for module, dep_data in repo_index.get("dependencies", {}).items():
+        target_ver = dep_data.get("target_version")
+        if not target_ver:
+            continue
+
+        new_req_line = f"{module}=={target_ver}"
+        found = False
+
+        for i, line in enumerate(req_lines):
+            cleaned = line.strip().lower()
+
+            if (
+                cleaned == module.lower()
+                or cleaned.startswith(f"{module.lower()}==")
+                or cleaned.startswith(f"{module.lower()}>=")
+                or cleaned.startswith(f"{module.lower()}<=")
+                or cleaned.startswith(f"{module.lower()}~=")
+                or cleaned.startswith(f"{module.lower()}!=")
+                or cleaned.startswith(f"{module.lower()}<")
+                or cleaned.startswith(f"{module.lower()}>")
+            ):
+                req_lines[i] = new_req_line
+                found = True
+                break
+
+        if not found:
+            req_lines.append(new_req_line)
+
+    temp_req_path.write_text(
+        "\n".join(req_lines) + "\n",
+        encoding="utf-8",
+    )
+
+    # Save target requirements alongside successful migration artifacts.
+    # Keep the temporary requirements file for Docker verification for now.
+    success_root = Path("succ_migrations").resolve()
+    success_root.mkdir(parents=True, exist_ok=True)
+
+    success_req_path = success_root / "requirements.txt"
+    success_req_path.write_text(
+        temp_req_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    print(f"Target requirements saved to: {success_req_path}")
+
+    print(f"Original requirements: {original_req_path}")
+    print(f"Temporary requirements: {temp_req_path}")
+    print(f"Original exists: {original_req_path.is_file()}")
+    print(f"Temporary exists: {temp_req_path.is_file()}")
+    print(f"Generated requirements:\n{temp_req_path.read_text(encoding='utf-8')}")
+  
+
+    # 4. Gather Python files and execute per-file pipeline
+    py_files = [
+        f for f in root.rglob("*.py") 
+        if f.name != "__init__.py"
+    ]
+
+    passed_files = []
+    failed_files = []
+
+    for py_file in py_files:
+        relative_path = str(py_file.relative_to(root))
+
+        file_data = repo_index.get('files', {}).get(relative_path, {})
+        rules = file_data.get('usages', [])
+        symbols = repo_index.get('symbols', {})
+        relationships = repo_index.get('relationships', [])
+        dependencies = repo_index.get('dependencies', {})
+        source_code = py_file.read_text(encoding='utf-8')
+
+        success, context_data = run_for_repo(
+            root_path=str(root),
+            path=relative_path,
+            rules=rules,
+            symbols=symbols,
+            relationships=relationships,
+            dependencies=dependencies,
+            source_code=source_code,
+            temp_req_path=temp_req_path,
+            passed_files=passed_files,
+            failed_files=failed_files
+        )
+
+        if context_data:
+            file_contexts[relative_path] = context_data  
+
+    # 5. Retry Loop for Failed Files (Up to 2 attempts per failed path)
+    if failed_files:
+        print(f"\n🔄 Starting 2-Attempt Repair Loop for {len(failed_files)} failed file(s)...")
+        
+        still_failed = []
+        for path in failed_files.copy():
+            print(f"\n[Running Repair Loop]: {path}")
+            context_data = file_contexts.get(path)
+
+            if not context_data:
+                still_failed.append(path)
+                continue
+
+            # Clean call to repair_file using context_data
+            recovered = repair_file(
+                path=path,
+                temp_req_path=temp_req_path,
+                context_data=context_data,
+                root_path=str(root),
+                max_retries=2,
+                passed_files=passed_files,
+                failed_files=failed_files
+            )
+
+            if recovered:
+                print(f"✅ Successfully recovered: {path}")
+            else:
+                still_failed.append(path)
+                print(f"❌ Failed after retry attempts: {path}")
+
+        failed_files = still_failed
+
+    # 6. Final Summary & Exit Check
+    print(f"\n📊 Final Migration Summary — Passed: {len(passed_files)}, Failed: {len(failed_files)}")
+
+    if failed_files:
+        print("\n❌ Permanent Migration Failures Detected:")
+        for failed_path in failed_files:
+            print(f"   • File Path: {failed_path}")
+        print("\nExiting due to unresolved migration errors.")
+        exit(1)
+    else:
+        print("\n🎉 All files migrated successfully!")
+        print("\n==================================================")
+        print("--- [Stage 6] Repo-Wide Integration Verification ---")
+        print("==================================================")
+
+        test_result = verify_full_repo_in_docker(str(root), temp_req_path)
+
+        if not test_result["success"]:
+            print("\n❌ Full-Repo Verification Failed!")
+            print(f"Exit Code: {test_result['exit_code']}")
+            print("--- STDOUT ---")
+            print(test_result["stdout"])
+            print("--- STDERR ---")
+            print(test_result["stderr"])
+            print("\nAborting PR creation due to failing integration test suite.")
+            exit(1)
+
+        print("\n✅ Full-Repo Test Suite Passed Successfully (Exit Code 0)!")
+        print("Run, aston pr --path (path_value) for pr creation")
+
+        # original_req_path = root / "requirements.txt"
+        # if temp_req_path.exists():
+        #     original_req_path.write_text(temp_req_path.read_text(encoding="utf-8"), encoding="utf-8")
+        #     print(f"✅ Successfully updated original requirements.txt")
+
+        # print("Want to create PR[Y/N]?")
+        # gross = ['YES', 'yes', 'y', 'Y']
+        # ans = input()
+        # if ans in gross:
+        
+
+        #     # =========================================================================
+        #     # STEP 4: AUTOMATED PULL REQUEST CREATION
+        #     # =========================================================================
+        #     github_repo = resolve_github_repo(list(repo_index.get("dependencies", {}).keys())[0])
+        #     if github_repo:
+        #         branch_id = uuid4().hex[:8]
+        #         branch_name = f"aston/automated-migration-{branch_id}"
+        #         title = "chore(deps): automated dependency migration via Aston"
+        #         body = (
+        #             "### 🤖 Automated Dependency Upgrade\n\n"
+        #             "Aston successfully migrated this repository and verified system behavior.\n"
+        #             f"- **Migrated Files:** {len(passed_files)}\n"
+        #             f"- **File-Level Checks:** Passed (Docker isolated syntax/import checks)\n"
+        #             f"- **Repo-Wide Verification:** Passed (`pytest` integration gate passed successfully)"
+        #         )
+                
+        #         create_migration_pr(
+        #             repo_path=str(root),
+        #             github_repo=github_repo,
+        #             branch_name=branch_name,
+        #             title=title,
+        #             body=body
+        #         )
+        # else:
+        #     print("PR skipped.")
+
+# def run_migration_for_github_repo(github_repo: str, workspace: str = "./workspace"):
+#     """
+#     1. Fetches/clones the repository from GitHub.
+#     2. Runs the complete Aston migration pipeline.
+#     """
+#     print(f"🚀 Starting Aston Pipeline for GitHub target: {github_repo}")
+    
+#     # Step 1: Clone or fetch the repo
+#     repo_local_path = clone_repo_from_github(github_repo, target_dir=workspace)
+#     if not repo_local_path:
+#         print("❌ Aborting migration due to repository fetch failure.")
+#         return False
+
+#     # Step 2: Feed the local path directly into your migration pipeline
+#     try:
+#         migrate_repo(str(repo_local_path))
+#         print(f"🎉 Migration workflow completed successfully for {github_repo}!")
+#         return True
+#     except Exception as e:
+#         print(f"❌ Migration pipeline crashed with error: {e}")
+#         raise e
+
+
+
+

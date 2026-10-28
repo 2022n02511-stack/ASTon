@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "package": "openai",
+      "old_api": "openai.api.gpt-6.1-terra",
+      "new_api": null,
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": "The gpt-6.1-terra model identifier has been removed.\nValidation concerns: This migration strategy requires manual review. No concrete replacement API has been established.",
+      "from_version": "v3.0.0",
+      "to_version": "v3.39.0",
+      "example_before": null,
+      "example_after": null,
+      "evidence": "add gpt-6.1-terra model identifier ([#4180](https://github.com/openai/openai-python/issues/4180)) ([e8beb1a](https://github.com/openai/openai-python/commit/e8beb1abdf6de71ea10195c942f6566ca2696c28))",
+      "source_url": "https://github.com/openai/openai-python/blob/v3.39.0/CHANGELOG.md",
+      "validation_status": "needs_review"
+    }
+  ],
+  "raw_example_blocks": []
+}

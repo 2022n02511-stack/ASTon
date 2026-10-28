@@ -1,0 +1,35 @@
+{
+  "rules": [
+    {
+      "package": "openai",
+      "old_api": "openai.ChatCompletion.create",
+      "new_api": null,
+      "requires_instantiation": null,
+      "migration_type": "unknown",
+      "description": "The migration from openai.ChatCompletion.create to the new API is not established in the documentation.\nValidation concerns: Evidence could not be verified verbatim against the source documentation. This migration strategy requires manual review. No concrete replacement API has been established.",
+      "from_version": "v1.0.0",
+      "to_version": "v2.0.0",
+      "example_before": null,
+      "example_after": null,
+      "evidence": null,
+      "source_url": "https://github.com/openai/openai-python/releases/tag/v2.0.0",
+      "validation_status": "needs_review"
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Embedding.create",
+      "new_api": null,
+      "requires_instantiation": null,
+      "migration_type": "unknown",
+      "description": "The migration from openai.Embedding.create to the new API is not established in the documentation.\nValidation concerns: Evidence could not be verified verbatim against the source documentation. This migration strategy requires manual review. No concrete replacement API has been established.",
+      "from_version": "v1.0.0",
+      "to_version": "v2.0.0",
+      "example_before": null,
+      "example_after": null,
+      "evidence": null,
+      "source_url": "https://github.com/openai/openai-python/releases/tag/v2.0.0",
+      "validation_status": "needs_review"
+    }
+  ],
+  "raw_example_blocks": []
+}
