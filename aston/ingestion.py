@@ -839,10 +839,16 @@ def get_installed_version(package_name: str) -> str | None:
 
 
 def get_latest_pypi_version(package_name: str) -> str | None:
-    response = requests.get(f"https://pypi.org/pypi/{package_name}/json", timeout=REQUEST_TIMEOUT)
-    if response.status_code == 200:
+    try:
+        response = requests.get(
+            f"https://pypi.org/pypi/{package_name}/json",
+            timeout=(3, 5),
+        )
+        response.raise_for_status()
         return response.json().get("info", {}).get("version")
-    return None
+    except (requests.RequestException, ValueError) as exc:
+        print(f"⚠️ PyPI lookup failed for {package_name}: {exc}")
+        return None
 
 
 def resolve_github_repo(package_name: str) -> Optional[str]:

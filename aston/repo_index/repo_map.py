@@ -275,7 +275,7 @@ def migrate_repo(path: str):
 
     # 5. Retry Loop for Failed Files (Up to 2 attempts per failed path)
     if failed_files:
-        print(f"\n🔄 Starting 2-Attempt Repair Loop for {len(failed_files)} failed file(s)...")
+        print(f"\nStarting 2-Attempt Repair Loop for {len(failed_files)} failed file(s)...")
         
         still_failed = []
         for path in failed_files.copy():
@@ -298,24 +298,24 @@ def migrate_repo(path: str):
             )
 
             if recovered:
-                print(f"✅ Successfully recovered: {path}")
+                print(f"Successfully recovered: {path}")
             else:
                 still_failed.append(path)
-                print(f"❌ Failed after retry attempts: {path}")
+                print(f"Failed after retry attempts: {path}")
 
         failed_files = still_failed
 
     # 6. Final Summary & Exit Check
-    print(f"\n📊 Final Migration Summary — Passed: {len(passed_files)}, Failed: {len(failed_files)}")
+    print(f"\n Final Migration Summary — Passed: {len(passed_files)}, Failed: {len(failed_files)}")
 
     if failed_files:
-        print("\n❌ Permanent Migration Failures Detected:")
+        print("\nPermanent Migration Failures Detected:")
         for failed_path in failed_files:
             print(f"   • File Path: {failed_path}")
         print("\nExiting due to unresolved migration errors.")
         exit(1)
     else:
-        print("\n🎉 All files migrated successfully!")
+        print("\nAll files migrated successfully!")
         print("\n==================================================")
         print("--- [Stage 6] Repo-Wide Integration Verification ---")
         print("==================================================")
@@ -323,7 +323,7 @@ def migrate_repo(path: str):
         test_result = verify_full_repo_in_docker(str(root), temp_req_path)
 
         if not test_result["success"]:
-            print("\n❌ Full-Repo Verification Failed!")
+            print("\n Full-Repo Verification Failed!")
             print(f"Exit Code: {test_result['exit_code']}")
             print("--- STDOUT ---")
             print(test_result["stdout"])
@@ -332,68 +332,7 @@ def migrate_repo(path: str):
             print("\nAborting PR creation due to failing integration test suite.")
             exit(1)
 
-        print("\n✅ Full-Repo Test Suite Passed Successfully (Exit Code 0)!")
+        print("\n Full-Repo Test Suite Passed Successfully (Exit Code 0)!")
         print("Run, aston pr --path (path_value) for pr creation")
 
-        # original_req_path = root / "requirements.txt"
-        # if temp_req_path.exists():
-        #     original_req_path.write_text(temp_req_path.read_text(encoding="utf-8"), encoding="utf-8")
-        #     print(f"✅ Successfully updated original requirements.txt")
-
-        # print("Want to create PR[Y/N]?")
-        # gross = ['YES', 'yes', 'y', 'Y']
-        # ans = input()
-        # if ans in gross:
-        
-
-        #     # =========================================================================
-        #     # STEP 4: AUTOMATED PULL REQUEST CREATION
-        #     # =========================================================================
-        #     github_repo = resolve_github_repo(list(repo_index.get("dependencies", {}).keys())[0])
-        #     if github_repo:
-        #         branch_id = uuid4().hex[:8]
-        #         branch_name = f"aston/automated-migration-{branch_id}"
-        #         title = "chore(deps): automated dependency migration via Aston"
-        #         body = (
-        #             "### 🤖 Automated Dependency Upgrade\n\n"
-        #             "Aston successfully migrated this repository and verified system behavior.\n"
-        #             f"- **Migrated Files:** {len(passed_files)}\n"
-        #             f"- **File-Level Checks:** Passed (Docker isolated syntax/import checks)\n"
-        #             f"- **Repo-Wide Verification:** Passed (`pytest` integration gate passed successfully)"
-        #         )
-                
-        #         create_migration_pr(
-        #             repo_path=str(root),
-        #             github_repo=github_repo,
-        #             branch_name=branch_name,
-        #             title=title,
-        #             body=body
-        #         )
-        # else:
-        #     print("PR skipped.")
-
-# def run_migration_for_github_repo(github_repo: str, workspace: str = "./workspace"):
-#     """
-#     1. Fetches/clones the repository from GitHub.
-#     2. Runs the complete Aston migration pipeline.
-#     """
-#     print(f"🚀 Starting Aston Pipeline for GitHub target: {github_repo}")
-    
-#     # Step 1: Clone or fetch the repo
-#     repo_local_path = clone_repo_from_github(github_repo, target_dir=workspace)
-#     if not repo_local_path:
-#         print("❌ Aborting migration due to repository fetch failure.")
-#         return False
-
-#     # Step 2: Feed the local path directly into your migration pipeline
-#     try:
-#         migrate_repo(str(repo_local_path))
-#         print(f"🎉 Migration workflow completed successfully for {github_repo}!")
-#         return True
-#     except Exception as e:
-#         print(f"❌ Migration pipeline crashed with error: {e}")
-#         raise e
-
-
-
-
+       
