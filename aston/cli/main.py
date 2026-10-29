@@ -74,7 +74,7 @@ def main():
 
     if args.command == "check":
         if args.run:
-            print("\n🚀 Initiating migration pipeline...")
+            print("\nInitiating migration pipeline...")
             migrate_repo(args.path)
         else:
             print(f"Scanning repository at: {args.path}")
