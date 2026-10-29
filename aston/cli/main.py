@@ -5,12 +5,22 @@ from aston.poller import watcher
 from aston.github_integrations.pr import create_migration_pr
 
 def main():
-    parser = argparse.ArgumentParser(prog="aston")
+    parser = argparse.ArgumentParser(
+        prog="aston",
+        description="ASTon: Automated repo analyzer and migration CLI tool."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Check command
-    check_parser = subparsers.add_parser("check", help="Scan dependencies and optionally run migration")
-    check_parser.add_argument("--run", action="store_true", help="Execute migration if breaking changes are found")
+    check_parser = subparsers.add_parser(
+        "check", 
+        help="Scan repo dependencies and optionally run migration"
+    )
+    check_parser.add_argument(
+        "--run", 
+        action="store_true", 
+        help="Execute migration if breaking changes are found"
+    )
     check_parser.add_argument(
         "--path",
         type=Path,
@@ -18,8 +28,23 @@ def main():
         help="Repository directory to analyze",
     )
 
-    # PR command with signature-matching arguments
-    pr_parser = subparsers.add_parser("pr", help="Create a pull request commit bundle for the migration")
+    # Watcher command
+    watcher_parser = subparsers.add_parser(
+        "watcher", 
+        help="Poll/watch repository for dependency changes"
+    )
+    watcher_parser.add_argument(
+        "--path",
+        type=Path,
+        default=Path.cwd(),
+        help="Repository directory to watch",
+    )
+
+    # PR command
+    pr_parser = subparsers.add_parser(
+        "pr", 
+        help="Create a pull request commit bundle for the migration"
+    )
     pr_parser.add_argument(
         "--path",
         type=str,
@@ -48,11 +73,17 @@ def main():
     args = parser.parse_args()
 
     if args.command == "check":
-        watcher(args.path)
         if args.run:
-            print("\n🚀 Initiating migration pipeline...")
+            print("\nInitiating migration pipeline...")
             migrate_repo(args.path)
+        else:
+            print(f"Scanning repository at: {args.path}")
+            # Add standalone check logic here if needed
             
+    elif args.command == "watcher":
+        print(f"Starting watcher on: {args.path}")
+        watcher(args.path)
+
     elif args.command == "pr":
         create_migration_pr(
             repo_path=args.path,

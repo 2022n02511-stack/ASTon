@@ -1,0 +1,41 @@
+{
+  "rules": [
+    {
+      "package": "openai",
+      "old_api": "openai.ChatCompletion.create",
+      "new_api": "client.chat.completions.create",
+      "requires_instantiation": true,
+      "migration_type": "structural",
+      "description": "The API call now requires instantiation of a client and uses a different method path.",
+      "from_version": "0.28.1",
+      "to_version": "v1.0.0",
+      "example_before": null,
+      "example_after": null,
+      "evidence": "openai.ChatCompletion.create() -> client.chat.completions.create()",
+      "source_url": "https://github.com/openai/openai-python/discussions/742",
+      "validation_status": "validated"
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Embedding.create",
+      "new_api": "client.embeddings.create",
+      "requires_instantiation": true,
+      "migration_type": "structural",
+      "description": "The API call now requires instantiation of a client and uses a different method path.",
+      "from_version": "0.28.1",
+      "to_version": "v1.0.0",
+      "example_before": null,
+      "example_after": null,
+      "evidence": "openai.Embedding.create() -> client.embeddings.create()",
+      "source_url": "https://github.com/openai/openai-python/discussions/742",
+      "validation_status": "validated"
+    }
+  ],
+  "raw_example_blocks": [
+    "# old\nimport openai\n\nopenai.api_key = os.environ['OPENAI_API_KEY']\n\n# new\nfrom openai import OpenAI\n\nclient = OpenAI(\n  api_key=os.environ['OPENAI_API_KEY'],  # this is also the default, it can be omitted\n)",
+    "# before\nimport json\nimport openai\n\ncompletion = openai.Completion.create(model='curie')\nprint(completion['choices'][0]['text'])\nprint(completion.get('usage'))\nprint(json.dumps(completion, indent=2))\n\n# after\nfrom openai import OpenAI\n\nclient = OpenAI()\n\ncompletion = client.completions.create(model='curie')\nprint(completion.choices[0].text)\nprint(dict(completion).get('usage'))\nprint(completion.model_dump_json(indent=2))",
+    "# old\nimport openai\n\ncompletion = openai.ChatCompletion.acreate(model=\"gpt-3.5-turbo\", messages=[{\"role\": \"user\", \"content\": \"Hello world\"}])\n\n# new\nfrom openai import AsyncOpenAI\n\nclient = AsyncOpenAI()\ncompletion = await client.chat.completions.create(model=\"gpt-3.5-turbo\", messages=[{\"role\": \"user\", \"content\": \"Hello world\"}])",
+    "from openai import OpenAI\n\nclient = OpenAI()\n\nfor job in client.fine_tuning.jobs.list(limit=1):\n    print(job)",
+    "from openai import AzureOpenAI\n\n# gets the API Key from environment variable AZURE_OPENAI_API_KEY\nclient = AzureOpenAI(\n    # https://learn.microsoft.com/en-us/azure/ai-services/openai/reference#rest-api-versioning\n    api_version=\"2023-07-01-preview\",\n    # https://learn.microsoft.com/en-us/azure/cognitive-services/openai/how-to/create-resource?pivots=web-portal#create-a-resource\n    azure_endpoint=\"https://example-endpoint.openai.azure.com\",\n)\n\ncompletion = client.chat.completions.create(\n    model=\"deployment-name\",  # e.g. gpt-35-instant\n    messages=[\n        {\n            \"role\": \"user\",\n            \"content\": \"How do I output all files in a directory using Python?\",\n        },\n    ],\n)\nprint(completion.model_dump_json(indent=2))"
+  ]
+}

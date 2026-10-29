@@ -1,4 +1,3 @@
-
 import ast
 import json
 import os
@@ -505,3 +504,4 @@ def scraper(
     print("RELEVANT RULES:", len(relevant_rules))
 
     return report, relevant_rules, is_genuinely_complete
+

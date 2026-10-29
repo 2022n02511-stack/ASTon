@@ -1,12 +1,10 @@
 """Validate extracted migration rules against a target dependency environment.
-
 Documentation evidence and runtime API probing are deliberately tracked
 separately: finding an attribute in the target package does not prove that a
 migration rule is semantically correct.
 """
 
 from __future__ import annotations
-
 import json
 import subprocess
 import tempfile

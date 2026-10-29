@@ -1,0 +1,72 @@
+{
+  "rules": [
+    {
+      "package": "openai",
+      "old_api": "openai.api_key",
+      "new_api": "client.api_key",
+      "requires_instantiation": true,
+      "migration_type": "initialization",
+      "description": "The API key is now set during client instantiation.",
+      "from_version": "0.28.1",
+      "to_version": "v1.0.0",
+      "example_before": null,
+      "example_after": null,
+      "evidence": "# old\nimport openai\n\nopenai.api_key = os.environ['OPENAI_API_KEY']\n\n# new\nfrom openai import OpenAI\n\nclient = OpenAI(\n  api_key=os.environ['OPENAI_API_KEY'],  # this is also the default, it can be omitted\n)",
+      "source_url": "https://github.com/openai/openai-python/discussions/742",
+      "validation_status": "validated"
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Completion.create",
+      "new_api": "client.completions.create",
+      "requires_instantiation": true,
+      "migration_type": "rename",
+      "description": "The Completion.create method is now called on the client instance.\nValidation concerns: Rename classification conflicts with a structural/configuration description.",
+      "from_version": "0.28.1",
+      "to_version": "v1.0.0",
+      "example_before": null,
+      "example_after": null,
+      "evidence": "- `openai.Completion.create()` -> `client.completions.create()`",
+      "source_url": "https://github.com/openai/openai-python/discussions/742",
+      "validation_status": "needs_review"
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.ChatCompletion.create",
+      "new_api": "client.chat.completions.create",
+      "requires_instantiation": true,
+      "migration_type": "rename",
+      "description": "The ChatCompletion.create method is now called on the client instance.\nValidation concerns: Rename classification conflicts with a structural/configuration description.",
+      "from_version": "0.28.1",
+      "to_version": "v1.0.0",
+      "example_before": null,
+      "example_after": null,
+      "evidence": "- `openai.ChatCompletion.create()` -> `client.chat.completions.create()`",
+      "source_url": "https://github.com/openai/openai-python/discussions/742",
+      "validation_status": "needs_review"
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.Embedding.create",
+      "new_api": "client.embeddings.create",
+      "requires_instantiation": true,
+      "migration_type": "rename",
+      "description": "The Embedding.create method is now called on the client instance.\nValidation concerns: Rename classification conflicts with a structural/configuration description.",
+      "from_version": "0.28.1",
+      "to_version": "v1.0.0",
+      "example_before": null,
+      "example_after": null,
+      "evidence": "- `openai.Embedding.create()` -> `client.embeddings.create()`",
+      "source_url": "https://github.com/openai/openai-python/discussions/742",
+      "validation_status": "needs_review"
+    }
+  ],
+  "raw_example_blocks": [
+    "```py\n# old\nimport openai\n\nopenai.api_key = os.environ['OPENAI_API_KEY']\n\n# new\nfrom openai import OpenAI\n\nclient = OpenAI(\n  api_key=os.environ['OPENAI_API_KEY'],  # this is also the default, it can be omitted\n)\n```",
+    "```py\n# before\nimport json\nimport openai\n\ncompletion = openai.Completion.create(model='curie')\nprint(completion['choices'][0]['text'])\nprint(completion.get('usage'))\nprint(json.dumps(completion, indent=2))\n\n# after\nfrom openai import OpenAI\n\nclient = OpenAI()\n\ncompletion = client.completions.create(model='curie')\nprint(completion.choices[0].text)\nprint(dict(completion).get('usage'))\nprint(completion.model_dump_json(indent=2))\n```",
+    "```py\n# old\nimport openai\n\ncompletion = openai.ChatCompletion.acreate(model=\"gpt-3.5-turbo\", messages=[{\"role\": \"user\", \"content\": \"Hello world\"}])\n\n# new\nfrom openai import AsyncOpenAI\n\nclient = AsyncOpenAI()\ncompletion = await client.chat.completions.create(model=\"gpt-3.5-turbo\", messages=[{\"role\": \"user\", \"content\": \"Hello world\"}])\n```",
+    "```py\nimport openai\n\n# optional; defaults to `os.environ['OPENAI_API_KEY']`\nopenai.api_key = '...'\n\n# all client options can be configured just like the `OpenAI` instantiation counterpart\nopenai.base_url = \"https://...\"\nopenai.default_headers = {\"x-foo\": \"true\"}\n\ncompletion = openai.chat.completions.create(\n    model=\"gpt-4\",\n    messages=[\n        {\n            \"role\": \"user\",\n            \"content\": \"How do I output all files in a directory using Python?\",\n        },\n    ],\n)\nprint(completion.choices[0].message.content)\n```",
+    "```py\nfrom openai import OpenAI\n\nclient = OpenAI()\n\nfor job in client.fine_tuning.jobs.list(limit=1):\n    print(job)\n```",
+    "```python\nfrom openai import AzureOpenAI\n\n# gets the API Key from environment variable AZURE_OPENAI_API_KEY\nclient = AzureOpenAI(\n    # https://learn.microsoft.com/en-us/azure/ai-services/openai/reference#rest-api-versioning\n    api_version=\"2023-07-01-preview\",\n    # https://learn.microsoft.com/en-us/azure/cognitive-services/openai/how-to/create-resource?pivots=web-portal#create-a-resource\n    azure_endpoint=\"https://example-endpoint.openai.azure.com\",\n)\n\ncompletion = client.chat.completions.create(\n    model=\"deployment-name\",  # e.g. gpt-35-instant\n    messages=[\n        {\n            \"role\": \"user\",\n            \"content\": \"How do I output all files in a directory using Python?\",\n        },\n    ],\n)\nprint(completion.model_dump_json(indent=2))\n```"
+  ]
+}

@@ -1,6 +1,4 @@
-
 from __future__ import annotations
-
 import json
 import shutil
 import subprocess
@@ -364,14 +362,17 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
                 raw_stderr=exc.stderr or "",
             )
         finally:
-            # Clean up the unique image even when execution fails.
-            subprocess.run(
-                [docker, "image", "rm", "-f", image_tag],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
+        # Cleanup must never override the verification result.
+            try:
+                subprocess.run(
+                    [docker, "image", "rm", "-f", image_tag],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                pass
 
         elapsed = time.monotonic() - started
 

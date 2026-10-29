@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "package": "openai",
+      "old_api": "httpx.Client",
+      "new_api": "httpx2.Client",
+      "requires_instantiation": null,
+      "migration_type": "structural",
+      "description": "HTTPX2 is now the default HTTP client, and httpx is no longer installed automatically. Applications using custom HTTPX clients, transports, or configuration objects must migrate to their HTTPX2 equivalents.\nValidation concerns: Evidence could not be verified verbatim against the source documentation.",
+      "from_version": "v2.0.0",
+      "to_version": "v3.0.0",
+      "example_before": "import httpx\\nfrom openai import OpenAI\\nclient = OpenAI(http_client=httpx.Client())",
+      "example_after": "import httpx2\\nfrom openai import OpenAI\\nclient = OpenAI(http_client=httpx2.Client())",
+      "evidence": "Replace HTTPX-specific objects with the corresponding HTTPX2 objects:\\nPrevious object\\nHTTPX2 object\\nhttpx.Client\\nhttpx2.Client\\nhttpx.AsyncClient\\nhttpx2.AsyncClient\\nhttpx.Timeout\\nhttpx2.Timeout\\nhttpx.URL\\nhttpx2.URL\\nhttpx.Limits\\nhttpx2.Limits\\nhttpx.HTTPTransport\\nhttpx2.HTTPTransport\\nhttpx.AsyncHTTPTransport\\nhttpx2.AsyncHTTPTransport\\nhttpx.MockTransport\\nhttpx2.MockTransport",
+      "source_url": "https://github.com/openai/openai-python/blob/main/httpx2.md",
+      "validation_status": "needs_review"
+    }
+  ],
+  "raw_example_blocks": []
+}

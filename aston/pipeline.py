@@ -1,4 +1,3 @@
-
 from aston.axios import code_patcher, stage0, scraper
 from aston.docker import verify_single_file_in_docker, VerificationResult
 from aston.watcher import watcher
@@ -7,6 +6,8 @@ from pathlib import Path
 import json
 import os
 from uuid import uuid4
+from aston.repo_index import repo_map
+
 
 from aston.rule_validation import (
     validate_rules_against_target,
@@ -19,7 +20,6 @@ from aston.cli_ui.rich import (
     run_with_animation,
     print_aston_banner,
 )
-from aston.repo_index import repo_map
 
 
 def _safe_read_text(path: Path) -> str:
@@ -61,19 +61,17 @@ def _record_success(path: str, passed_files: list, failed_files: list) -> None:
 
 def _save_successful_migration(
     path: str,
-    source_path: Path,
+    verified_code: str,
     file_run_dir: Path,
 ) -> None:
     """Save verified source to artifacts and succ_migrations."""
-    verified_code = _safe_read_text(source_path)
-
     save_code(file_run_dir / "final.py", verified_code)
 
     migrated_path = Path("succ_migrations") / path
     migrated_path.parent.mkdir(parents=True, exist_ok=True)
     migrated_path.write_text(verified_code, encoding="utf-8")
 
-    print(f"🎉 Code successfully patched and saved to {migrated_path}")
+    print(f"Code successfully patched and saved to {migrated_path}")
 
 
 def _find_file_entry(repo_index: dict, path: str, root_path: str) -> dict:
@@ -128,6 +126,18 @@ def _get_file_usages(
 
     if not isinstance(usages, list):
         return []
+
+    print(f"[DEBUG] File: {path}")
+    print(f"[DEBUG] Indexed usage count: {len(usages)}")
+    print(
+        "[DEBUG] Indexed package values:",
+        sorted({
+            str(u.get("package"))
+            for u in usages
+            if isinstance(u, dict)
+        }),
+    )
+    print(f"[DEBUG] Requested package: {package_name}")
 
     return [
         usage
@@ -249,7 +259,7 @@ def repair_file(
     while pr.status != VerificationResult.PASS and retry_count < max_retries:
         if not _is_repairable_failure(pr):
             print(
-                "\n⚠️ Not sending this failure to code repair: "
+                "\nNot sending this failure to code repair: "
                 f"status={pr.status}, "
                 f"type={getattr(pr, 'error_type', None)}, "
                 f"message={getattr(pr, 'error_message', None)}"
@@ -263,7 +273,7 @@ def repair_file(
         try:
             failed_source = _safe_read_text(candidate_path)
         except (OSError, UnicodeError) as exc:
-            print(f"❌ Cannot read candidate source {candidate_path}: {exc}")
+            print(f"Cannot read candidate source {candidate_path}: {exc}")
             _record_failure(display_path, failed_files)
             return False
 
@@ -278,7 +288,7 @@ def repair_file(
         )
 
         print(
-            f"\n⚠️ Stage 4 Failed with "
+            f"\nStage 4 Failed with "
             f"{getattr(pr, 'error_type', None)} "
             f"(Repair Attempt {retry_count}/{max_retries})"
         )
@@ -311,12 +321,12 @@ def repair_file(
         )
 
         if not isinstance(factored_code, str) or not factored_code.strip():
-            print("❌ Repair returned empty or invalid source. Stopping.")
+            print("Repair returned empty or invalid source. Stopping.")
             _record_failure(display_path, failed_files)
             return False
 
         if factored_code == failed_source:
-            print("❌ Repair returned unchanged source. Stopping.")
+            print("Repair returned unchanged source. Stopping.")
             _record_failure(display_path, failed_files)
             return False
 
@@ -326,7 +336,7 @@ def repair_file(
         save_code(repaired_attempt_path, factored_code)
 
         if not _write_candidate(candidate_path, factored_code):
-            print("❌ Could not write repaired candidate. Stopping.")
+            print("Could not write repaired candidate. Stopping.")
             _record_failure(display_path, failed_files)
             return False
 
@@ -342,7 +352,7 @@ def repair_file(
         try:
             verified_code = _safe_read_text(candidate_path)
         except (OSError, UnicodeError) as exc:
-            print(f"❌ Cannot read verified candidate {candidate_path}: {exc}")
+            print(f"Cannot read verified candidate {candidate_path}: {exc}")
             _record_failure(display_path, failed_files)
             return False
 
@@ -350,18 +360,18 @@ def repair_file(
         original_path.write_text(verified_code, encoding="utf-8")
 
         _save_successful_migration(
-            display_path,
-            original_path,
+            path,
+            verified_code,
             file_run_dir,
         )
 
         _record_success(display_path, passed_files, failed_files)
 
-        print("\n✅ Sandboxed Verification Successful!")
+        print("\nSandboxed Verification Successful!")
         return True
 
     print(
-        f"\n❌ Verification stopped after {retry_count} repair attempts. "
+        f"\nVerification stopped after {retry_count} repair attempts. "
         "Original source was preserved."
     )
 
@@ -430,10 +440,20 @@ def run_for_repo(
             package_name=module,
         )
 
+        
         print(
-            f"📄 File-specific usages for {path} / {module}: "
+            f"File-specific usages for {path} / {module}: "
             f"{len(file_usages)}"
         )
+
+        # Do not run relevance/completeness analysis for a package
+        # that has no indexed usages in the current file.
+        if not file_usages:
+            print(
+                f"[SKIP] {path} has no indexed usages of {module}; "
+                "skipping per-file audit."
+            )
+            continue
 
         report, relevant_rules, is_complete = run_with_animation(
             f"Evaluating relevance and completeness for {module}...",
@@ -448,9 +468,10 @@ def run_for_repo(
             source_file=path,
         )
 
+
         if not report:
             print(
-                f"ℹ️ No legacy usages matched in {path}. "
+                f"No legacy usages matched in {path}. "
                 "Skipping migration for this file."
             )
             continue
@@ -492,7 +513,7 @@ def run_for_repo(
 
         if flat_all_rules and not known_target_versions:
             print(
-                "⚠️ Target versions are unknown; "
+                "Target versions are unknown; "
                 "skipping target-environment batch validation."
             )
 
@@ -511,7 +532,7 @@ def run_for_repo(
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(final_report_dict, f, indent=3)
 
-    print(f"📁 Canonical audit contract saved to {output_path}")
+    print(f"Canonical audit contract saved to {output_path}")
 
     validated_all_rules_dict = {}
 
@@ -593,7 +614,7 @@ def run_for_repo(
 
     if not _write_candidate(candidate_path, source_code):
         print(
-            "❌ Original source input is empty or invalid; "
+            "Original source input is empty or invalid; "
             "refusing to patch."
         )
         _record_failure(path, failed_files)
@@ -616,14 +637,14 @@ def run_for_repo(
 
         if not isinstance(factored_code, str) or not factored_code.strip():
             print(
-                "❌ Patcher returned empty or invalid source. "
+                "Patcher returned empty or invalid source. "
                 "Original source preserved."
             )
             _record_failure(path, failed_files)
             return False, {}
 
         if factored_code == source_code:
-            print("⚠️ Patcher returned unchanged source. Skipping verification.")
+            print("Patcher returned unchanged source. Skipping verification.")
             _record_success(path, passed_files, failed_files)
             return True, {}
 
@@ -631,7 +652,7 @@ def run_for_repo(
 
         if not _write_candidate(candidate_path, factored_code):
             print(
-                "❌ Could not write candidate source. "
+                "Could not write candidate source. "
                 "Original source preserved."
             )
             _record_failure(path, failed_files)
@@ -669,7 +690,7 @@ def run_for_repo(
             # Save the verified migrated code to succ_migrations instead.
             _save_successful_migration(
                 path,
-                original_path,
+                verified_code,
                 file_run_dir,
             )
 
@@ -678,11 +699,11 @@ def run_for_repo(
 
             _record_success(path, passed_files, failed_files)
 
-            print("\n✅ Sandboxed Verification Successful!")
+            print("\nSandboxed Verification Successful!")
             return True, context_data
 
         print(
-            f"\n⚠️ Initial verification failed for {path}. "
+            f"\nInitial verification failed for {path}. "
             "Starting repair loop..."
         )
 
