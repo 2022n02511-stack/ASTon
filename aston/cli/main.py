@@ -3,6 +3,7 @@ from pathlib import Path
 from aston.repo_index.repo_map import migrate_repo
 from aston.poller import watcher  
 from aston.github_integrations.pr import create_migration_pr
+from aston.cli.console import success, error, warning, info
 
 def main():
     parser = argparse.ArgumentParser(
@@ -74,14 +75,14 @@ def main():
 
     if args.command == "check":
         if args.run:
-            print("\nInitiating migration pipeline...")
+            info("\nInitiating migration pipeline...")
             migrate_repo(args.path)
         else:
-            print(f"Scanning repository at: {args.path}")
+            info(f"Scanning repository at: {args.path}")
             # Add standalone check logic here if needed
-            
+
     elif args.command == "watcher":
-        print(f"Starting watcher on: {args.path}")
+        info(f"Starting watcher on: {args.path}")
         watcher(args.path)
 
     elif args.command == "pr":

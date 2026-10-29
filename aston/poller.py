@@ -3,6 +3,7 @@ from pathlib import Path
 from packaging.requirements import Requirement
 from packaging.version import InvalidVersion, Version
 from aston.ingestion import get_latest_pypi_version
+from aston.cli.console import info, error, warning, success
 
 
 MAX_WORKERS = 10
@@ -84,13 +85,13 @@ def watcher(repo_path: str | Path) -> None:
     req_file = repo_dir / "requirements.txt"
 
     if not req_file.is_file():
-        print(f" No requirements.txt found in {repo_dir}")
+        warning(f"No requirements.txt found in {repo_dir}")
         return
 
     try:
         lines = req_file.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        print(f" Could not read {req_file}: {exc}")
+        error(f"Could not read {req_file}: {exc}")
         return
 
     # Ignore blank lines, comments, and pip directives.
@@ -100,10 +101,10 @@ def watcher(repo_path: str | Path) -> None:
     ]
 
     if not requirement_lines:
-        print("No package requirements found.")
+        warning("No package requirements found.")
         return
 
-    print(
+    info(
         f"Checking {len(requirement_lines)} requirement lines "
         f"for {repo_dir}..."
     )
@@ -123,23 +124,19 @@ def watcher(repo_path: str | Path) -> None:
             try:
                 result = future.result()
                 if result:
-                    package, declared, latest, error = result
+                    package, declared, latest, error_message = result
 
-                    if error:
-                        failures.append((package, error))
+                    if error_message:
+                        failures.append((package, error_message))
                     else:
                         results.append((package, declared, latest))
 
             except Exception as exc:
                 failures.append((futures[future], str(exc)))
 
-            print(
-                f"\rProgress: {completed}/{total} requirement lines",
-                end="",
-                flush=True,
-            )
+            info(f"Progress: {completed}/{total} requirement lines")
 
-    print("\n")
+    info("")
 
     breaking_changes = []
     unpinned = []
@@ -147,8 +144,8 @@ def watcher(repo_path: str | Path) -> None:
     for package, declared, latest in results:
         if not declared:
             unpinned.append(package)
-            print(
-                f" {package}: latest version is {latest}; "
+            info(
+                f"{package}: latest version is {latest}; "
                 "no exact declared version is available for comparison."
             )
             continue
@@ -165,35 +162,35 @@ def watcher(repo_path: str | Path) -> None:
 
         if is_major_version_change(str(current), str(target)):
             breaking_changes.append((package, str(current), str(target)))
-            print(
-                f" Potential breaking upgrade: {package} "
+            warning(
+                f"Potential breaking upgrade: {package} "
                 f"{current} -> {target}"
             )
 
     if failures:
-        print(f"\n {len(failures)} package lookup(s) failed:")
-        for package, error in failures:
-            print(f"  - {package}: {error}")
+        error(f"{len(failures)} package lookup(s) failed:")
+        for package, error_message in failures:
+            error(f"- {package}: {error_message}")
 
     if breaking_changes:
-        print(
-            "\nPotential major-version changes found. "
+        warning(
+            "Potential major-version changes found. "
             "A major version change does not guarantee a breaking change."
         )
-        print(
+        info(
             "Review the migration before running: "
-            f"aston check --run --path \"{repo_dir}\""
+            f'aston check --run --path "{repo_dir}"'
         )
     elif failures:
-        print(
-            "\n Check incomplete: some packages could not be checked. "
+        warning(
+            "Check incomplete: some packages could not be checked. "
             "Do not treat this result as confirmation of compatibility."
         )
     else:
-        print("\n No newer major-version changes detected.")
+        success("No newer major-version changes detected.")
 
     if unpinned:
-        print(
-            f"\n {len(unpinned)} package(s) lack a usable version "
+        warning(
+            f"{len(unpinned)} package(s) lack a usable version "
             "baseline; their compatibility could not be established."
         )

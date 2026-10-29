@@ -8,6 +8,7 @@ import os
 from uuid import uuid4
 from aston.repo_index import repo_map
 
+from aston.cli.console import success, error, warning, info
 
 from aston.rule_validation import (
     validate_rules_against_target,
@@ -73,7 +74,7 @@ def _save_successful_migration(
     migrated_path.parent.mkdir(parents=True, exist_ok=True)
     migrated_path.write_text(verified_code, encoding="utf-8")
 
-    print(f"Code successfully patched and saved to {migrated_path}")
+    success(f"Code successfully patched and saved to {migrated_path}")
 
 
 def _find_file_entry(repo_index: dict, path: str, root_path: str) -> dict:
@@ -248,7 +249,7 @@ def repair_file(
 
     while pr.status != VerificationResult.PASS and retry_count < max_retries:
         if not _is_repairable_failure(pr):
-            print(
+            info(
                 "\nNot sending this failure to code repair: "
                 f"status={pr.status}, "
                 f"type={getattr(pr, 'error_type', None)}, "
@@ -263,7 +264,7 @@ def repair_file(
         try:
             failed_source = _safe_read_text(candidate_path)
         except (OSError, UnicodeError) as exc:
-            print(f"Cannot read candidate source {candidate_path}: {exc}")
+            error(f"Cannot read candidate source {candidate_path}: {exc}")
             _record_failure(display_path, failed_files)
             return False
 
@@ -277,12 +278,12 @@ def repair_file(
             }
         )
 
-        print(
+        info(
             f"\nStage 4 Failed with "
             f"{getattr(pr, 'error_type', None)} "
             f"(Repair Attempt {retry_count}/{max_retries})"
         )
-        print("Routing to Stage 5 Self-Healing Repair Loop...")
+        info("Routing to Stage 5 Self-Healing Repair Loop...")
 
         repair_context = {
             "file_name": str(candidate_path),
@@ -311,12 +312,12 @@ def repair_file(
         )
 
         if not isinstance(factored_code, str) or not factored_code.strip():
-            print("Repair returned empty or invalid source. Stopping.")
+            error("Repair returned empty or invalid source. Stopping.")
             _record_failure(display_path, failed_files)
             return False
 
         if factored_code == failed_source:
-            print("Repair returned unchanged source. Stopping.")
+            warning("Repair returned unchanged source. Stopping.")
             _record_failure(display_path, failed_files)
             return False
 
@@ -326,7 +327,7 @@ def repair_file(
         save_code(repaired_attempt_path, factored_code)
 
         if not _write_candidate(candidate_path, factored_code):
-            print("Could not write repaired candidate. Stopping.")
+            error("Could not write repaired candidate. Stopping.")
             _record_failure(display_path, failed_files)
             return False
 
@@ -342,7 +343,7 @@ def repair_file(
         try:
             verified_code = _safe_read_text(candidate_path)
         except (OSError, UnicodeError) as exc:
-            print(f"Cannot read verified candidate {candidate_path}: {exc}")
+            error(f"Cannot read verified candidate {candidate_path}: {exc}")
             _record_failure(display_path, failed_files)
             return False
 
@@ -357,10 +358,10 @@ def repair_file(
 
         _record_success(display_path, passed_files, failed_files)
 
-        print("\nSandboxed Verification Successful!")
+        success("\nSandboxed Verification Successful!")
         return True
 
-    print(
+    warning(
         f"\nVerification stopped after {retry_count} repair attempts. "
         "Original source was preserved."
     )
@@ -391,9 +392,9 @@ def run_for_repo(
     run_dir = Path("aston/artifacts") / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\n==================================================")
-    print("--- [Stage 0] Global Repository Scanned Usages ---")
-    print("==================================================")
+    info("\n==================================================")
+    info("--- [Stage 0] Global Repository Scanned Usages ---")
+    info("==================================================")
 
     all_rules: dict[str, list] = {}
     all_reports: dict[str, list] = {}
@@ -430,7 +431,7 @@ def run_for_repo(
             package_name=module,
         )
 
-        print(
+        info(
             f"File-specific usages for {path} / {module}: "
             f"{len(file_usages)}"
         )
@@ -449,7 +450,7 @@ def run_for_repo(
         )
 
         if not report:
-            print(
+            info(
                 f"No legacy usages matched in {path}. "
                 "Skipping migration for this file."
             )
@@ -491,7 +492,7 @@ def run_for_repo(
         validated_rules = []
 
         if flat_all_rules and not known_target_versions:
-            print(
+            warning(
                 "Target versions are unknown; "
                 "skipping target-environment batch validation."
             )
@@ -511,7 +512,7 @@ def run_for_repo(
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(final_report_dict, f, indent=3)
 
-    print(f"Canonical audit contract saved to {output_path}")
+    success(f"Canonical audit contract saved to {output_path}")
 
     validated_all_rules_dict = {}
 
@@ -536,7 +537,7 @@ def run_for_repo(
     )
 
     if not has_valid_rules or not has_valid_matches:
-        print(f"[SKIP] No applicable migration for {path}")
+        warning(f"[SKIP] No applicable migration for {path}")
         return True, {}
 
     file_slug = path.replace("/", "_").replace(".py", "")
@@ -573,26 +574,26 @@ def run_for_repo(
     original_path = source_path
     candidate_path = _candidate_path(source_path, run_id).resolve()
 
-    print("\n--- CANDIDATE DIAGNOSTICS ---")
-    print(f"Repository root: {root_path}")
-    print(f"Original path: {original_path}")
-    print(f"Candidate path: {candidate_path}")
-    print(f"Candidate exists: {candidate_path.is_file()}")
-    print("-----------------------------\n")
+    info("\n--- CANDIDATE DIAGNOSTICS ---")
+    info(f"Repository root: {root_path}")
+    info(f"Original path: {original_path}")
+    info(f"Candidate path: {candidate_path}")
+    info(f"Candidate exists: {candidate_path.is_file()}")
+    info("-----------------------------\n")
 
-    print("\n--- CANDIDATE DIAGNOSTICS ---")
-    print(f"Candidate path: {candidate_path}")
-    print(f"Candidate exists: {candidate_path.is_file()}")
+    info("\n--- CANDIDATE DIAGNOSTICS ---")
+    info(f"Candidate path: {candidate_path}")
+    info(f"Candidate exists: {candidate_path.is_file()}")
 
     if candidate_path.is_file():
-        print(f"Candidate size: {candidate_path.stat().st_size} bytes")
+        info(f"Candidate size: {candidate_path.stat().st_size} bytes")
     else:
-        print("ERROR: Candidate was not written before verification.")
+        error("Candidate was not written before verification.")
 
-    print("-----------------------------\n")
+    info("-----------------------------\n")
 
     if not _write_candidate(candidate_path, source_code):
-        print(
+        error(
             "Original source input is empty or invalid; "
             "refusing to patch."
         )
@@ -615,7 +616,7 @@ def run_for_repo(
         )
 
         if not isinstance(factored_code, str) or not factored_code.strip():
-            print(
+            error(
                 "Patcher returned empty or invalid source. "
                 "Original source preserved."
             )
@@ -623,14 +624,14 @@ def run_for_repo(
             return False, {}
 
         if factored_code == source_code:
-            print("Patcher returned unchanged source. Skipping verification.")
+            warning("Patcher returned unchanged source. Skipping verification.")
             _record_success(path, passed_files, failed_files)
             return True, {}
 
         save_code(file_run_dir / "first_attempt.py", factored_code)
 
         if not _write_candidate(candidate_path, factored_code):
-            print(
+            error(
                 "Could not write candidate source. "
                 "Original source preserved."
             )
@@ -678,10 +679,10 @@ def run_for_repo(
 
             _record_success(path, passed_files, failed_files)
 
-            print("\nSandboxed Verification Successful!")
+            success("\nSandboxed Verification Successful!")
             return True, context_data
 
-        print(
+        info(
             f"\nInitial verification failed for {path}. "
             "Starting repair loop..."
         )
