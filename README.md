@@ -1,11 +1,5 @@
 ```python
 
-
-
-https://github.com/user-attachments/assets/0d83bd42-af21-4fd5-9f7c-4e0ea105f56a
-
-
-
 """
  █████╗ ███████╗████████╗ ██████╗ ███╗   ██╗
 ██╔══██╗██╔════╝╚══██╔══╝██╔═══██╗████╗  ██║
@@ -22,6 +16,12 @@ https://github.com/user-attachments/assets/0d83bd42-af21-4fd5-9f7c-4e0ea105f56a
  ╚═════╝╚══════╝╚═╝
 """
 ```
+
+
+
+https://github.com/user-attachments/assets/017fab0c-d32d-4485-8f66-ece7c7bd0313
+
+
 
 ### Automated dependency migration, from breaking-change detection to a verified pull request.
 
