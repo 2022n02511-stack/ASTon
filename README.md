@@ -1,6 +1,5 @@
 ```python
 
-"""
  █████╗ ███████╗████████╗ ██████╗ ███╗   ██╗
 ██╔══██╗██╔════╝╚══██╔══╝██╔═══██╗████╗  ██║
 ███████║███████╗   ██║   ██║   ██║██╔██╗ ██║
@@ -14,12 +13,11 @@
 ██║     ██║     ██║
 ╚██████╗███████╗██║
  ╚═════╝╚══════╝╚═╝
-"""
 ```
 
 
 
-https://github.com/user-attachments/assets/017fab0c-d32d-4485-8f66-ece7c7bd0313
+https://github.com/user-attachments/assets/93b542ed-d45a-46c2-b5f7-d14d8654a1a7
 
 
 
@@ -166,7 +164,6 @@ aston pr --path aston/succ_migrations --repo demo   # 3. open the PR
 <summary><strong>View the complete migration workflow</strong></summary>
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#13261b','primaryBorderColor':'#2ECC71','primaryTextColor':'#2ECC71','lineColor':'#2ECC71','secondaryColor':'#13261b','tertiaryColor':'#1a1b1e','edgeLabelBackground':'#1a1b1e','fontFamily':'monospace'}}}%%
 flowchart TD
     A["Start ASTon"] --> B["Watch for dependency updates"]
     B --> C["Discover new package version"]
@@ -185,6 +182,8 @@ flowchart TD
     N --> O{"Repository verification passed?"}
     O -->|No| P["Report verification failure"]
     O -->|Yes| Q["Create GitHub pull request"]
+    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
+    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 </details>
@@ -246,7 +245,6 @@ When an update is detected, ASTon collects:
 It follows relevant links to gather extra migration context, so extraction doesn't rely on version numbers alone.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#13261b','primaryBorderColor':'#2ECC71','primaryTextColor':'#2ECC71','lineColor':'#2ECC71','secondaryColor':'#13261b','tertiaryColor':'#1a1b1e','edgeLabelBackground':'#1a1b1e','fontFamily':'monospace'}}}%%
 flowchart TD
     A["New package version"] --> B["Find release information"]
     B --> C["Collect changelog"]
@@ -254,6 +252,8 @@ flowchart TD
     D --> E["Follow relevant documentation links"]
     E --> F["Combine collected information"]
     F --> G["Documentation for rule extraction"]
+    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
+    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 </details>
@@ -307,7 +307,6 @@ response = client.chat.completions.create(
 The scanner captures: imported package, imported symbol, local alias, instantiated objects, API usage, source line, and relevant keyword arguments.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#13261b','primaryBorderColor':'#2ECC71','primaryTextColor':'#2ECC71','lineColor':'#2ECC71','secondaryColor':'#13261b','tertiaryColor':'#1a1b1e','edgeLabelBackground':'#1a1b1e','fontFamily':'monospace'}}}%%
 flowchart TD
     A["Python source files"] --> B["Python AST parser"]
     B --> C["Inspect imports"]
@@ -317,6 +316,8 @@ flowchart TD
     D --> F
     E --> F
     F --> G["Repository dependency usage"]
+    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
+    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 </details>
@@ -394,7 +395,6 @@ Each migrated file is verified inside a Docker container with the target depende
 - Timeouts
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#13261b','primaryBorderColor':'#2ECC71','primaryTextColor':'#2ECC71','lineColor':'#2ECC71','secondaryColor':'#13261b','tertiaryColor':'#1a1b1e','edgeLabelBackground':'#1a1b1e','fontFamily':'monospace'}}}%%
 flowchart TD
     A["Generated candidate"] --> B["Create Docker environment"]
     B --> C["Install target requirements"]
@@ -404,6 +404,8 @@ flowchart TD
     E -->|No| G["Analyze verification error"]
     G --> H["Generate repaired candidate"]
     H --> B
+    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
+    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 **Repair process:** the failed candidate plus its real verification feedback are used to attempt a *better* migration, not just repeat the same replacement. Successful files are saved to the migration output directory.
@@ -426,7 +428,6 @@ The verification environment combines:
 Then it runs Python syntax checks and the configured test command.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#13261b','primaryBorderColor':'#2ECC71','primaryTextColor':'#2ECC71','lineColor':'#2ECC71','secondaryColor':'#13261b','tertiaryColor':'#1a1b1e','edgeLabelBackground':'#1a1b1e','fontFamily':'monospace'}}}%%
 flowchart TD
     A["Original repository"] --> C["Build verification copy"]
     B["Successful migrated files"] --> C
@@ -437,6 +438,8 @@ flowchart TD
     G --> H{"Passed?"}
     H -->|Yes| I["Ready for pull request"]
     H -->|No| J["Report verification failure"]
+    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
+    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 </details>
@@ -449,7 +452,6 @@ flowchart TD
 The PR contains the migrated files and updated dependency requirements. The original source repository is kept separate from ASTon's output during migration, so you stay in control.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#13261b','primaryBorderColor':'#2ECC71','primaryTextColor':'#2ECC71','lineColor':'#2ECC71','secondaryColor':'#13261b','tertiaryColor':'#1a1b1e','edgeLabelBackground':'#1a1b1e','fontFamily':'monospace'}}}%%
 flowchart TD
     A["Verified migration output"] --> B["Prepare migration branch"]
     B --> C["Copy migrated files"]
@@ -458,6 +460,8 @@ flowchart TD
     E --> F["Create GitHub pull request"]
     F --> G["Developer reviews changes"]
     G --> H["Merge when approved"]
+    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
+    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 </details>
@@ -576,7 +580,6 @@ openai==3.29.0
 ```
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'primaryColor':'#13261b','primaryBorderColor':'#2ECC71','primaryTextColor':'#2ECC71','lineColor':'#2ECC71','secondaryColor':'#13261b','tertiaryColor':'#1a1b1e','edgeLabelBackground':'#1a1b1e','fontFamily':'monospace'}}}%%
 flowchart TD
     A["openai 0.28.1"] --> B["Discover target 3.29.0"]
     B --> C["Collect migration documentation"]
@@ -588,6 +591,8 @@ flowchart TD
     H --> I["Verify and repair"]
     I --> J["Verify complete repository"]
     J --> K["Create pull request"]
+    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
+    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 Instead of manually hunting down every affected API, you receive a **pull request with the proposed changes**.
