@@ -168,7 +168,7 @@ def migrate_repo(path: str):
 
     # 1. Generate and save repo index
     repo_index = repo_map(path)
-    print(repo_index)
+    print(json.dumps(repo_index, indent=3))
 
     with open('repo_index.json', 'w', encoding='utf-8') as f:
         json.dump(repo_index, f, indent=3)
