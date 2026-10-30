@@ -1,3 +1,4 @@
+
 import subprocess
 from pathlib import Path
 import shlex
@@ -8,7 +9,7 @@ def verify_full_repo_in_docker(
     req_file: str | Path,
     *,
     python_image: str = "python:3.11-slim",
-    timeout: int = 300,
+    timeout: int = 600,
     test_command: str = "python -m pytest -q",
 ) -> dict:
     """Verify the migrated repository inside an isolated Docker container."""
@@ -50,15 +51,18 @@ def verify_full_repo_in_docker(
     test_cmd = test_command.strip()
 
     script = f"""
-export XDG_CACHE_HOME=/tmp/cache
 set -eu
 
+export PIP_CACHE_DIR=/root/.cache/pip
+export PIP_DISABLE_PIP_VERSION_CHECK=1
+
 echo "--- [Verification] Installing requirements ---"
-python -m pip install --no-cache-dir --disable-pip-version-check -r {shlex.quote(container_req)} ||
+python -m pip install -r {shlex.quote(container_req)} ||
     {{ echo "ASTON_SETUP_FAILED"; exit 20; }}
 
 echo "--- [Verification] Installing test runner (pytest) ---"
-python -m pip install --no-cache-dir --disable-pip-version-check pytest || true
+python -m pip install pytest ||
+    {{ echo "ASTON_PYTEST_SETUP_FAILED"; exit 23; }}
 
 echo "--- [Verification] Running AST syntax checks ---"
 python -c '
@@ -127,6 +131,7 @@ echo "ASTON_VERIFICATION_PASSED"
     docker_cmd = [
         "docker", "run", "--rm",
         "-v", f"{repo_path}:/app:ro,Z",
+        "-v", "aston-pip-cache:/root/.cache/pip",
         "--workdir", "/app",
         python_image,
         "sh", "-c", script,
@@ -147,6 +152,8 @@ echo "ASTON_VERIFICATION_PASSED"
             status = "PASS"
         elif "ASTON_SETUP_FAILED" in output:
             status = "SETUP_ERROR"
+        elif "ASTON_PYTEST_SETUP_FAILED" in output:
+            status = "SETUP_ERROR"
         elif "ASTON_SYNTAX_FAILED" in output:
             status = "SYNTAX_ERROR"
         elif "ASTON_TESTS_FAILED" in output:
@@ -163,12 +170,23 @@ echo "ASTON_VERIFICATION_PASSED"
         }
 
     except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+
         return {
             "status": "TIMEOUT",
             "success": False,
             "exit_code": None,
-            "stdout": exc.stdout or "",
-            "stderr": exc.stderr or "Repository verification timed out.",
+            "stdout": stdout,
+            "stderr": (
+                f"Repository verification timed out after {timeout} seconds."
+                + (f"\n{stderr}" if stderr else "")
+            ),
         }
 
     except OSError as exc:

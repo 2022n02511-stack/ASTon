@@ -35,7 +35,11 @@ def run_git_command(cmd: list[str], cwd: Path) -> tuple[bool, str]:
         )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as e:
-        return False, e.stderr.strip()
+        stderr = (e.stderr or "").strip()
+        stdout = (e.stdout or "").strip()
+
+        message = stderr or stdout or f"Git exited with code {e.returncode}"
+        return False, message
 
 
 def get_git_remote_repo(repo_path: Path) -> str | None:

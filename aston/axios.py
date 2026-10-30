@@ -10,7 +10,7 @@ from aston.ingestion import run_stage1_pipeline, get_latest_pypi_version
 from aston.relevance import evaluate_relevance_and_completeness, canonicalize_usage
 from aston.docker import verify_single_file_in_docker, VerificationResult
 from aston.relevance import normalize_api_symbol
-from aston.cli.console import info, error, warning, success, step, debug, data
+
 load_dotenv()
 
 API_KEY = os.environ.get("MISTRAL_API_KEY")
@@ -83,8 +83,8 @@ def stage0(package_name: str, repo_index: dict) -> set[str]:
         for record in stage0_records
     }
 
-    info(
-        f"Dynamic AST Scanned Usages for {package_name}: "
+    print(
+        f"📁 Dynamic AST Scanned Usages for {package_name}: "
         f"{dynamic_stage0_symbols}"
     )
 
@@ -166,8 +166,8 @@ def man_extract(
             }
         )
 
-    info(
-        f"man_extract: {filename} | "
+    print(
+        f"📄 man_extract: {filename} | "
         f"input usages={len(parses)} | matched usages={len(report)}"
     )
 
@@ -194,13 +194,14 @@ def code_patcher(
             "MISTRAL_API_KEY is not set; cannot run code patcher."
         )
 
-    # Require rules and matches for a normal migration, but don't
-    # block repair mode.
+    # CHANGE: Require rules and matches for a normal migration, but don't
+    # block repair mode. A verifier error can still need repair even when
+    # the original migration evidence is incomplete.
     if not repair_context and (
         not contains_items(rules)
         or not contains_items(matches)
     ):
-        warning(
+        print(
             "No valid migration rules or matching usages. "
             "Retaining original code unmodified."
         )
@@ -301,8 +302,8 @@ CURRENT SOURCE CODE TO MIGRATE OR REPAIR:
     try:
         ast.parse(clean)
     except SyntaxError as se:
-        error(
-            "Patcher returned syntactically invalid Python code "
+        print(
+            "❌ Patcher returned syntactically invalid Python code "
             f"({se}); rejecting candidate."
         )
         return source_code
@@ -315,15 +316,15 @@ CURRENT SOURCE CODE TO MIGRATE OR REPAIR:
         }
 
         if clean == source_code:
-            error(
-                "Repair returned unchanged source; "
+            print(
+                "❌ Repair returned unchanged source; "
                 "rejecting candidate."
             )
             return source_code
 
         if clean in failed_sources:
-            error(
-                "Repair repeated a previously failed source; "
+            print(
+                "❌ Repair repeated a previously failed source; "
                 "rejecting candidate."
             )
             return source_code
@@ -342,8 +343,9 @@ def scraper(
     source_file: str,
 ):
     """Run migration-rule coverage auditing, targeted extraction, and matching."""
-
-    print("\n========== [Stage 1] Multi-Boundary Chain Ingestion ==========")
+    print("\n==================================================")
+    print("--- [Stage 1] Multi-Boundary Chain Ingestion ---")
+    print("==================================================")
 
     def normalize_set(values) -> set[str]:
         if not values:
@@ -376,9 +378,9 @@ def scraper(
 
     working_doc_text = doc_text or ""
 
-    print("\n========== Stage 2: Initial Audit ==========")
-    info(f"Stage 0 symbols: {sorted(stage0_symbols)}")
-    info(f"Initial rule count: {len(working_rules)}")
+    print("\n========== STAGE 2: INITIAL AUDIT ==========")
+    print("STAGE 0 SYMBOLS:", sorted(stage0_symbols))
+    print("INITIAL RULE COUNT:", len(working_rules))
 
     audit = evaluate_relevance_and_completeness(
         stage0_symbols,
@@ -406,8 +408,10 @@ def scraper(
     )
 
     if targeted_symbols:
-        print("\n========== Stage 2.5: Targeted Rule Extraction ==========")
-        info(f"Focus symbols: {sorted(targeted_symbols)}")
+        print("\n==================================================")
+        print("--- [Stage 2.5] Targeted Rule Extraction ---")
+        print("==================================================")
+        print("FOCUS SYMBOLS:", sorted(targeted_symbols))
 
         try:
             extra_rules, extra_doc_text, extra_examples = (
@@ -443,11 +447,14 @@ def scraper(
                     working_doc_text + "\n\n" + extra_doc_text
                 ).strip()
 
-            info(f"Targeted candidates returned: {len(extra_rules)}")
-            info(f"New distinct rules added: {added_count}")
+            print("TARGETED CANDIDATES RETURNED:", len(extra_rules))
+            print("NEW DISTINCT RULES ADDED:", added_count)
 
         except Exception as exc:
-            warning(f"Targeted extraction failed: {exc!r}")
+            print(
+                "⚠️ Targeted extraction failed:",
+                repr(exc),
+            )
 
         audit = evaluate_relevance_and_completeness(
             stage0_symbols,
@@ -455,9 +462,12 @@ def scraper(
             working_doc_text,
         )
 
-    print("\n========== Stage 2: Final Relevance & Completeness Audit ==========")
-    info(f"Observed: {sorted(observed_symbols)}")
-    info(f"Total rules: {len(working_rules)}")
+    print("\n==================================================")
+    print("--- [Stage 2] Final Relevance & Completeness Audit ---")
+    print("==================================================")
+    print("OBSERVED:", sorted(observed_symbols))
+    print("TOTAL RULES:", len(working_rules))
+    print("\nFINAL AUDIT RESULT:")
     print(json.dumps(audit, indent=2, default=str))
 
     relevant_rules = audit.get("relevant_records", [])
@@ -470,14 +480,17 @@ def scraper(
         and not uncovered
     )
 
-    info(f"Coverage complete: {is_genuinely_complete}")
+    print("\n========== FINAL COVERAGE STATUS ==========")
+    print("Complete:", is_genuinely_complete)
 
     with open("changes.json", "w", encoding="utf-8") as f:
         json.dump(relevant_rules, f, indent=2, default=str)
 
-    success("Canonical contract saved in changes.json")
+    print("📁 Canonical contract saved in changes.json")
 
-    print("\n========== Stage 3: Matching Usages ==========")
+    print("\n==================================================")
+    print("--- [Stage 3] Matching Usages ---")
+    print("==================================================")
 
     # The pipeline must pass usages from the current file here.
     # Stage 0 remains global; this matching operation is file-specific.
@@ -487,7 +500,8 @@ def scraper(
         source_file,
     )
 
-    info(f"Matched usages: {len(report)}")
-    info(f"Relevant rules: {len(relevant_rules)}")
+    print("MATCHED USAGES:", len(report))
+    print("RELEVANT RULES:", len(relevant_rules))
 
     return report, relevant_rules, is_genuinely_complete
+
