@@ -10,6 +10,8 @@ from aston.repo_verification import verify_full_repo_in_docker
 from aston.github_integrations.pr import create_migration_pr
 from aston.ingestion import resolve_github_repo
 from uuid import uuid4
+from aston.cli.console import rich_success, error, warning, info
+
 
 
 def discover_python_files(root: Path) -> list[Path]:
@@ -168,7 +170,6 @@ def migrate_repo(path: str):
 
     # 1. Generate and save repo index
     repo_index = repo_map(path)
-    print(repo_index)
 
     with open('repo_index.json', 'w', encoding='utf-8') as f:
         json.dump(repo_index, f, indent=3)
@@ -188,8 +189,8 @@ def migrate_repo(path: str):
                 target_version, 
                 repo_index["symbols"]
             )
-            print("composed_rules: ", composed_rules)
-            print(raw_code_examples)
+            # info("composed_rules: ", composed_rules)
+            # print(raw_code_examples)
             
             migrations[module] = {
                 'composed_rules': composed_rules,
@@ -252,7 +253,7 @@ def migrate_repo(path: str):
 
     # Save target requirements alongside successful migration artifacts.
     # Keep the temporary requirements file for Docker verification for now.
-    success_root = Path("succ_migrations").resolve()
+    success_root = Path(__file__).resolve().parents[1] / "succ_migrations"
     success_root.mkdir(parents=True, exist_ok=True)
 
     success_req_path = success_root / "requirements.txt"
@@ -261,12 +262,12 @@ def migrate_repo(path: str):
         encoding="utf-8",
     )
 
-    print(f"Target requirements saved to: {success_req_path}")
+    rich_success(f"Target requirements saved to: {success_req_path}")
 
-    print(f"Original requirements: {original_req_path}")
-    print(f"Temporary requirements: {temp_req_path}")
-    print(f"Original exists: {original_req_path.is_file()}")
-    print(f"Temporary exists: {temp_req_path.is_file()}")
+    info(f"Original requirements: {original_req_path}")
+    info(f"Temporary requirements: {temp_req_path}")
+    info(f"Original exists: {original_req_path.is_file()}")
+    info(f"Temporary exists: {temp_req_path.is_file()}")
     # print(f"Generated requirements:\n{temp_req_path.read_text(encoding='utf-8')}")
   
 
@@ -304,11 +305,11 @@ def migrate_repo(path: str):
 
     # 5. Retry Loop for Failed Files (Up to 2 attempts per failed path)
     if failed_files:
-        print(f"\nStarting 2-Attempt Repair Loop for {len(failed_files)} failed file(s)...")
+        info(f"Starting 2-Attempt Repair Loop for {len(failed_files)} failed file(s)...")
         
         still_failed = []
         for path in failed_files.copy():
-            print(f"\n[Running Repair Loop]: {path}")
+            info(f"[Running Repair Loop]: {path}")
             context_data = file_contexts.get(path)
 
             if not context_data:
@@ -327,39 +328,47 @@ def migrate_repo(path: str):
             )
 
             if recovered:
-                print(f"Successfully recovered: {path}")
+                rich_success(f"Successfully recovered: {path}")
             else:
                 still_failed.append(path)
-                print(f"Failed after retry attempts: {path}")
+                error(f"Failed after retry attempts: {path}")
 
         failed_files = still_failed
 
     # 6. Final Summary & Exit Check
-    print(f"\n Final Migration Summary — Passed: {len(passed_files)}, Failed: {len(failed_files)}")
+    info(f"Final Migration Summary — Passed: {len(passed_files)}, Failed: {len(failed_files)}")
 
     if failed_files:
-        print("\nPermanent Migration Failures Detected:")
+        error("\nPermanent Migration Failures Detected:")
         for failed_path in failed_files:
             print(f"   • File Path: {failed_path}")
-        print("\nExiting due to unresolved migration errors.")
+        info("Exiting due to unresolved migration errors.")
         exit(1)
     else:
-        print("\nAll files migrated successfully!")
-        print("\n==================================================")
+        rich_success("All files migrated successfully!")
+        print("==================================================")
         print("--- [Stage 6] Repo-Wide Integration Verification ---")
         print("==================================================")
 
-        test_result = verify_full_repo_in_docker(str(root), temp_req_path)
+        migration_root = Path(__file__).resolve().parents[1] / "succ_migrations"
+
+        test_result = verify_full_repo_in_docker(
+            str(root),
+            migration_root,
+        )
+
+        if test_result.get("status") == "PASS":
+            temp_req_path.unlink(missing_ok=True)
 
         if not test_result["success"]:
-            print("\n Full-Repo Verification Failed!")
-            print(f"Exit Code: {test_result['exit_code']}")
-            print("--- STDOUT ---")
-            print(test_result["stdout"])
-            print("--- STDERR ---")
-            print(test_result["stderr"])
-            print("\nAborting PR creation due to failing integration test suite.")
+            error("Full-Repo Verification Failed!")
+            info(f"Exit Code: {test_result['exit_code']}")
+            info("--- STDOUT ---")
+            info(test_result["stdout"])
+            info("--- STDERR ---")
+            info(test_result["stderr"])
+            info("\nAborting PR creation due to failing integration test suite.")
             exit(1)
 
-        print("\n Full-Repo Test Suite Passed Successfully (Exit Code 0)!")
-        print("Run, aston pr --path (path_value) for pr creation")
+        rich_success("Full-Repo Test Suite Passed Successfully (Exit Code 0)!")
+        info("Run, aston pr --path (path_value) for pr creation")

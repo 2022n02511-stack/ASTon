@@ -1,11 +1,11 @@
 """Chat service using the legacy OpenAI SDK interface."""
 
-import openai
 from openai import OpenAI
+import os
 
 def ask_assistant(prompt: str) -> str:
     """Send a prompt using the pre-v1 ChatCompletion API."""
-    client = OpenAI()
+    client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[

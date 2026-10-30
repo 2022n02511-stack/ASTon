@@ -3,7 +3,7 @@ from pathlib import Path
 from packaging.requirements import Requirement
 from packaging.version import InvalidVersion, Version
 from aston.ingestion import get_latest_pypi_version
-from aston.cli.console import info, error, warning, success
+from aston.cli.console import info, error, warning, rich_success
 
 
 MAX_WORKERS = 10
@@ -187,7 +187,7 @@ def watcher(repo_path: str | Path) -> None:
             "Do not treat this result as confirmation of compatibility."
         )
     else:
-        success("No newer major-version changes detected.")
+        rich_success("No newer major-version changes detected.")
 
     if unpinned:
         warning(

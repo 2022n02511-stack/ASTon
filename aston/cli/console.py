@@ -1,9 +1,8 @@
-
 from rich.console import Console
 
 console = Console()
 
-def success(message: str) -> None:
+def rich_success(message: str) -> None:
     console.print(f"[bold green]SUCCESS[/bold green] {message}")
 
 def error(message: str) -> None:
