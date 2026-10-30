@@ -1,10 +1,10 @@
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from packaging.requirements import Requirement
 from packaging.version import InvalidVersion, Version
 from aston.ingestion import get_latest_pypi_version
-from aston.cli.console import info, error, warning, success
-
+from aston.cli.console import info, error, warning, success, step, debug, data
 
 MAX_WORKERS = 10
 

@@ -1,8 +1,10 @@
+
 import argparse
 from pathlib import Path
 from aston.repo_index.repo_map import migrate_repo
-from aston.poller import watcher  
+from aston.poller import watcher
 from aston.github_integrations.pr import create_migration_pr
+from aston.cli.console import info, error, warning, success, step, debug, data
 
 def main():
     parser = argparse.ArgumentParser(
@@ -13,12 +15,12 @@ def main():
 
     # Check command
     check_parser = subparsers.add_parser(
-        "check", 
+        "check",
         help="Scan repo dependencies and optionally run migration"
     )
     check_parser.add_argument(
-        "--run", 
-        action="store_true", 
+        "--run",
+        action="store_true",
         help="Execute migration if breaking changes are found"
     )
     check_parser.add_argument(
@@ -30,7 +32,7 @@ def main():
 
     # Watcher command
     watcher_parser = subparsers.add_parser(
-        "watcher", 
+        "watcher",
         help="Poll/watch repository for dependency changes"
     )
     watcher_parser.add_argument(
@@ -42,7 +44,7 @@ def main():
 
     # PR command
     pr_parser = subparsers.add_parser(
-        "pr", 
+        "pr",
         help="Create a pull request commit bundle for the migration"
     )
     pr_parser.add_argument(
@@ -74,14 +76,14 @@ def main():
 
     if args.command == "check":
         if args.run:
-            print("\nInitiating migration pipeline...")
+            info("Initiating migration pipeline...")
             migrate_repo(args.path)
         else:
-            print(f"Scanning repository at: {args.path}")
+            info(f"Scanning repository at: {args.path}")
             # Add standalone check logic here if needed
-            
+
     elif args.command == "watcher":
-        print(f"Starting watcher on: {args.path}")
+        info(f"Starting watcher on: {args.path}")
         watcher(args.path)
 
     elif args.command == "pr":
@@ -91,6 +93,7 @@ def main():
             title=args.title,
             body=args.body
         )
+
 
 if __name__ == "__main__":
     main()

@@ -1,21 +1,6 @@
 [
   {
     "package": "openai",
-    "old_api": "openai.Embedding.create",
-    "new_api": "client.embeddings.create",
-    "requires_instantiation": true,
-    "migration_type": "structural",
-    "description": "The method for creating embeddings has changed. The old method is no longer supported.",
-    "from_version": "0.28.1",
-    "to_version": "v1.0.0",
-    "example_before": null,
-    "example_after": null,
-    "evidence": "- `openai.Embedding.create()` -> `client.embeddings.create()`",
-    "source_url": "https://github.com/openai/openai-python/discussions/742",
-    "validation_status": "validated"
-  },
-  {
-    "package": "openai",
     "old_api": "openai.ChatCompletion.create",
     "new_api": "client.chat.completions.create",
     "requires_instantiation": true,
@@ -26,6 +11,21 @@
     "example_before": null,
     "example_after": null,
     "evidence": "- `openai.ChatCompletion.create()` -> `client.chat.completions.create()`",
+    "source_url": "https://github.com/openai/openai-python/discussions/742",
+    "validation_status": "validated"
+  },
+  {
+    "package": "openai",
+    "old_api": "openai.Embedding.create",
+    "new_api": "client.embeddings.create",
+    "requires_instantiation": true,
+    "migration_type": "structural",
+    "description": "The method for creating embeddings has changed. The old method is no longer supported.",
+    "from_version": "0.28.1",
+    "to_version": "v1.0.0",
+    "example_before": null,
+    "example_after": null,
+    "evidence": "- `openai.Embedding.create()` -> `client.embeddings.create()`",
     "source_url": "https://github.com/openai/openai-python/discussions/742",
     "validation_status": "validated"
   }

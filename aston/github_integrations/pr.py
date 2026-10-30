@@ -3,58 +3,14 @@ import subprocess
 import requests
 from pathlib import Path
 from dotenv import load_dotenv
-from aston.cli.console import success, error, warning, info
+from aston.cli.console import info, error, warning, success, step, debug, data
 import re
 
 load_dotenv()
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_API = "[https://api.github.com](https://api.github.com)"
+GITHUB_API = "https://api.github.com"
 
-# \# def clone_repo_from_github(github_repo: str, target_dir: str = "./workspace") -> Path | None:
-# \#     """
-# \#     Clones a GitHub repository locally using the GITHUB_TOKEN for authentication.
-# \#     Example github_repo: 'octocat/Hello-World' or full URL.
-# \#     """
-# \#     target_path = Path(target_dir).expanduser().resolve()
-# \#     target_path.mkdir(parents=True, exist_ok=True)
-
-# \#     # Normalize inputs like '[https://github.com/owner/repo.git](https://github.com/owner/repo.git)' down to 'owner/repo'
-# \#     clean_slug = github_repo.strip()
-# \#     if "github.com" in clean_slug:
-# \#         clean_slug = clean_slug.rstrip("/").removesuffix(".git")
-# \#         clean_slug = "/".join(clean_slug.split("/")[-2:])
-
-# \#     # Construct authenticated clone URL if token exists
-# \#     if GITHUB_TOKEN:
-# \#         clone_url = f"[https://x-access-token:{GITHUB_TOKEN}@github.com/{clean_slug}.git](https://x-access-token:{GITHUB_TOKEN}@github.com/{clean_slug}.git)"
-# \#     else:
-# \#         clone_url = f"[https://github.com/{clean_slug}.git](https://github.com/{clean_slug}.git)"
-
-# \#     repo_folder_name = clean_slug.split("/")[-1]
-# \#     repo_local_path = target_path / repo_folder_name
-
-# \#     # If already cloned, pull latest changes; otherwise clone fresh
-# \#     if repo_local_path.exists() and (repo_local_path / ".git").exists():
-# \#         info(f"Repository already exists locally at {repo_local_path}. Pulling latest changes...")
-# \#         try:
-# \#             subprocess.run(["git", "pull"], cwd=repo_local_path, check=True, text=True, capture_output=True)
-# \#         except subprocess.CalledProcessError as e:
-# \#             warning(f"'git pull' failed: {e.stderr.strip()}. Continuing with existing local state.")
-# \#     else:
-# \#         info(f"Cloning repository '{clean_slug}' into {repo_local_path}...")
-# \#         result = subprocess.run(
-# \#             ["git", "clone", clone_url, str(repo_local_path)],
-# \#             stdout=subprocess.PIPE,
-# \#             stderr=subprocess.PIPE,
-# \#             text=True
-# \#         )
-# \#         if result.returncode != 0:
-# \#             error(f"Failed to clone repository: {result.stderr.strip()}")
-# \#             return None
-
-# \#     success(f"Successfully prepared repository at: {repo_local_path}")
-# \#     return repo_local_path
 
 def _github_headers() -> dict[str, str]:
     headers = {
@@ -84,19 +40,31 @@ def run_git_command(cmd: list[str], cwd: Path) -> tuple[bool, str]:
 
 def get_git_remote_repo(repo_path: Path) -> str | None:
     """Attempts to extract 'owner/repo' from the local git remote config."""
-    success, output = run_git_command(["git", "remote", "get-url", "origin"], cwd=repo_path)
-    if not success or not output:
+    ok, output = run_git_command(
+        ["git", "remote", "get-url", "origin"],
+        cwd=repo_path,
+    )
+    if not ok or not output:
         return None
-    # Parse github.com/owner/repo from URL (supports HTTPS and SSH)
-    # e.g., [https://github.com/owner/repo.git](https://github.com/owner/repo.git) or git@github.com:owner/repo.git
 
-    match = re.search(r"githu\**\.\**com[:/]([^/]+/[^/]+?)(?:\**\.\**git)?$", output)
+    # Parse github.com/owner/repo from URL (supports HTTPS and SSH)
+    # e.g., https://github.com/owner/repo.git or git@github.com:owner/repo.git
+
+    match = re.search(
+        r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$",
+        output,
+    )
     if match:
         return match.group(1)
     return None
 
 
-def create_migration_pr(repo_path: str, branch_name: str, title: str, body: str) -> str | None:
+def create_migration_pr(
+    repo_path: str,
+    branch_name: str,
+    title: str,
+    body: str,
+) -> str | None:
     """
     Safely creates a git branch, commits changes, pushes to remote, and opens a GitHub PR.
     """
@@ -113,39 +81,63 @@ def create_migration_pr(repo_path: str, branch_name: str, title: str, body: str)
         error("Automated PR creation requires a linked GitHub remote repository.")
         return None
 
-    info(f"\nPreparing Pull Request for '{github_repo}' on branch '{branch_name}'...")
+    info(
+        f"\nPreparing Pull Request for '{github_repo}' "
+        f"on branch '{branch_name}'..."
+    )
 
     # 2. Check if repo exists on GitHub via API before pushing
     repo_check_url = f"{GITHUB_API}/repos/{github_repo}"
-    check_response = requests.get(repo_check_url, headers=_github_headers())
+    check_response = requests.get(
+        repo_check_url,
+        headers=_github_headers(),
+    )
     if check_response.status_code != 200:
-        error(f"Target repository '{github_repo}' does not exist on GitHub or token lacks access.")
+        error(
+            f"Target repository '{github_repo}' does not exist on GitHub "
+            "or token lacks access."
+        )
         return None
 
     # 3. Checkout new branch
-    success, err = run_git_command(["git", "checkout", "-b", branch_name], cwd=root)
-    if not success:
-        success, err = run_git_command(["git", "checkout", branch_name], cwd=root)
-        if not success:
+    ok, err = run_git_command(
+        ["git", "checkout", "-b", branch_name],
+        cwd=root,
+    )
+    if not ok:
+        ok, err = run_git_command(
+            ["git", "checkout", branch_name],
+            cwd=root,
+        )
+        if not ok:
             error(f"Failed to create/checkout git branch: {err}")
             return None
 
     # 4. Stage changes
-    success, err = run_git_command(["git", "add", "."], cwd=root)
-    if not success:
+    ok, err = run_git_command(
+        ["git", "add", "."],
+        cwd=root,
+    )
+    if not ok:
         error(f"Failed to stage files for commit: {err}")
         return None
 
     # 5. Commit changes
-    success, err = run_git_command(["git", "commit", "-m", title], cwd=root)
-    if not success and "nothing to commit" not in err:
+    ok, err = run_git_command(
+        ["git", "commit", "-m", title],
+        cwd=root,
+    )
+    if not ok and "nothing to commit" not in err:
         error(f"Failed to commit changes: {err}")
         return None
 
     # 6. Push branch to remote
     info(f"Pushing branch {branch_name} to remote...")
-    success, err = run_git_command(["git", "push", "-u", "origin", branch_name], cwd=root)
-    if not success:
+    ok, err = run_git_command(
+        ["git", "push", "-u", "origin", branch_name],
+        cwd=root,
+    )
+    if not ok:
         error(f"Failed to push branch to remote: {err}")
         return None
 
@@ -155,15 +147,22 @@ def create_migration_pr(repo_path: str, branch_name: str, title: str, body: str)
         "title": title,
         "body": body,
         "head": branch_name,
-        "base": "main"  # Adjust if the default branch is 'master'
+        "base": "main",  # Adjust if the default branch is 'master'
     }
 
-    response = requests.post(pr_url, headers=_github_headers(), json=payload)
+    response = requests.post(
+        pr_url,
+        headers=_github_headers(),
+        json=payload,
+    )
     if response.status_code in (201, 200):
         pr_data = response.json()
         html_url = pr_data.get("html_url")
         success(f"Successfully created Pull Request: {html_url}")
         return html_url
     else:
-        error(f"Failed to create GitHub PR ({response.status_code}): {response.text}")
+        error(
+            f"Failed to create GitHub PR "
+            f"({response.status_code}): {response.text}"
+        )
         return None
