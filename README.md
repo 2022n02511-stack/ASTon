@@ -1,23 +1,27 @@
-<div align="center">
+```python
 
-```diff
-+  █████╗ ███████╗████████╗ ██████╗ ███╗   ██╗
-+ ██╔══██╗██╔════╝╚══██╔══╝██╔═══██╗████╗  ██║
-+ ███████║███████╗   ██║   ██║   ██║██╔██╗ ██║
-+ ██╔══██║╚════██║   ██║   ██║   ██║██║╚██╗██║
-+ ██║  ██║███████║   ██║   ╚██████╔╝██║ ╚████║
-+ ╚═╝  ╚═╝╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═══╝
-+
-+  ██████╗██╗     ██╗
-+ ██╔════╝██║     ██║
-+ ██║     ██║     ██║
-+ ██║     ██║     ██║
-+ ╚██████╗███████╗██║
-+  ╚═════╝╚══════╝╚═╝
+
+
+https://github.com/user-attachments/assets/0d83bd42-af21-4fd5-9f7c-4e0ea105f56a
+
+
+
+"""
+ █████╗ ███████╗████████╗ ██████╗ ███╗   ██╗
+██╔══██╗██╔════╝╚══██╔══╝██╔═══██╗████╗  ██║
+███████║███████╗   ██║   ██║   ██║██╔██╗ ██║
+██╔══██║╚════██║   ██║   ██║   ██║██║╚██╗██║
+██║  ██║███████║   ██║   ╚██████╔╝██║ ╚████║
+╚═╝  ╚═╝╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═══╝
+
+ ██████╗██╗     ██╗
+██╔════╝██║     ██║
+██║     ██║     ██║
+██║     ██║     ██║
+╚██████╗███████╗██║
+ ╚═════╝╚══════╝╚═╝
+"""
 ```
-
-https://github.com/user-attachments/assets/598b3658-7606-493f-a4c4-3ce6f38e456a
-
 
 ### Automated dependency migration, from breaking-change detection to a verified pull request.
 
@@ -34,8 +38,6 @@ https://github.com/user-attachments/assets/598b3658-7606-493f-a4c4-3ce6f38e456a
 **[Contributing](#contributing)**
 
 *Making dependency migrations less manual.*
-
-</div>
 
 ---
 
@@ -804,10 +806,6 @@ These details make problems far easier to reproduce and investigate.
 
 ---
 
-
-https://github.com/user-attachments/assets/0e014a65-6899-4b02-a3aa-063272fbae91
-
-
 <div align="center">
 
 **ASTon — Making dependency migrations less manual.**
@@ -815,4 +813,3 @@ https://github.com/user-attachments/assets/0e014a65-6899-4b02-a3aa-063272fbae91
 If ASTon saves you time, consider starring the repo.
 
 </div>
-
