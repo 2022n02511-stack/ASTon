@@ -17,7 +17,7 @@
 
 
 
-https://github.com/user-attachments/assets/93b542ed-d45a-46c2-b5f7-d14d8654a1a7
+https://github.com/user-attachments/assets/812a1990-13c3-4c45-8a8e-080f602c7a3f
 
 
 
@@ -182,8 +182,6 @@ flowchart TD
     N --> O{"Repository verification passed?"}
     O -->|No| P["Report verification failure"]
     O -->|Yes| Q["Create GitHub pull request"]
-    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
-    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 </details>
@@ -252,8 +250,6 @@ flowchart TD
     D --> E["Follow relevant documentation links"]
     E --> F["Combine collected information"]
     F --> G["Documentation for rule extraction"]
-    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
-    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 </details>
@@ -316,8 +312,6 @@ flowchart TD
     D --> F
     E --> F
     F --> G["Repository dependency usage"]
-    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
-    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 </details>
@@ -404,8 +398,6 @@ flowchart TD
     E -->|No| G["Analyze verification error"]
     G --> H["Generate repaired candidate"]
     H --> B
-    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
-    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 **Repair process:** the failed candidate plus its real verification feedback are used to attempt a *better* migration, not just repeat the same replacement. Successful files are saved to the migration output directory.
@@ -438,8 +430,6 @@ flowchart TD
     G --> H{"Passed?"}
     H -->|Yes| I["Ready for pull request"]
     H -->|No| J["Report verification failure"]
-    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
-    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 </details>
@@ -460,8 +450,6 @@ flowchart TD
     E --> F["Create GitHub pull request"]
     F --> G["Developer reviews changes"]
     G --> H["Merge when approved"]
-    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
-    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 </details>
@@ -591,8 +579,6 @@ flowchart TD
     H --> I["Verify and repair"]
     I --> J["Verify complete repository"]
     J --> K["Create pull request"]
-    classDef default fill:#13261b,stroke:#2ECC71,color:#2ECC71
-    linkStyle default stroke:#2ECC71,stroke-width:2px
 ```
 
 Instead of manually hunting down every affected API, you receive a **pull request with the proposed changes**.
