@@ -355,6 +355,7 @@ def migrate_repo(path: str):
         test_result = verify_full_repo_in_docker(
             str(root),
             migration_root,
+            migration_root / "requirements.txt",
         )
 
         if test_result.get("status") == "PASS":

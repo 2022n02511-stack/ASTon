@@ -1,4 +1,3 @@
-
 import subprocess
 from pathlib import Path
 import shlex
@@ -9,6 +8,7 @@ import tempfile
 def verify_full_repo_in_docker(
     repo_root: str,
     migrated_files_path: str | Path,
+    req_file: str | Path,
     *,
     python_image: str = "python:3.11-slim",
     timeout: int = 300,
@@ -18,7 +18,7 @@ def verify_full_repo_in_docker(
 
     repo_path = Path(repo_root).resolve()
     migration_path = Path(migrated_files_path).resolve()
-    requirements_path = migration_path / "requirements.txt"
+    requirements_path = Path(req_file).resolve()
 
     if not repo_path.is_dir():
         return {
@@ -35,7 +35,7 @@ def verify_full_repo_in_docker(
             "success": False,
             "exit_code": None,
             "stdout": "",
-            "stderr": f"Migration directory not found: {migration_path}",
+            "stderr": f"Migrated files directory not found: {migration_path}",
         }
 
     if not requirements_path.is_file():
@@ -47,11 +47,14 @@ def verify_full_repo_in_docker(
             "stderr": f"Requirements file not found: {requirements_path}",
         }
 
+    test_cmd = test_command.strip()
+
     try:
         with tempfile.TemporaryDirectory(prefix="aston_verify_") as temp_dir:
+
             verification_repo = Path(temp_dir) / "repo"
 
-            # 1. Copy the original repository, excluding Git and environments.
+            # 1. Copy the original repository.
             shutil.copytree(
                 repo_path,
                 verification_repo,
@@ -64,15 +67,16 @@ def verify_full_repo_in_docker(
                 ),
             )
 
-            # 2. Overlay only successfully migrated files.
+            # 2. Overlay migrated files, preserving their relative paths.
             for migrated_file in migration_path.rglob("*"):
+
                 if not migrated_file.is_file():
                     continue
 
                 relative_path = migrated_file.relative_to(migration_path)
 
                 # Requirements are handled separately below.
-                if relative_path == Path("requirements.txt"):
+                if relative_path.as_posix() == "requirements.txt":
                     continue
 
                 destination = verification_repo / relative_path
@@ -80,21 +84,19 @@ def verify_full_repo_in_docker(
 
                 shutil.copy2(migrated_file, destination)
 
-            # 3. Replace requirements in the temporary repository.
+            # 3. Replace requirements with the target requirements.
             shutil.copy2(
                 requirements_path,
                 verification_repo / "requirements.txt",
             )
 
-            container_req = "/app/requirements.txt"
-            test_cmd = test_command.strip()
-
+            # 4. Run the assembled repository inside Docker.
             script = f"""
 export PIP_CACHE_DIR=/root/.cache/pip
 set -eu
 
 echo "--- [Verification] Installing requirements ---"
-python -m pip install --disable-pip-version-check -r {shlex.quote(container_req)} ||
+python -m pip install --disable-pip-version-check -r /app/requirements.txt ||
     {{ echo "ASTON_SETUP_FAILED"; exit 20; }}
 """
 

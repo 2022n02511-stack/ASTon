@@ -1,6 +1,5 @@
 """Embedding helper using the legacy OpenAI SDK interface."""
 
-import openai
 from openai import OpenAI
 
 client = OpenAI()
