@@ -41,25 +41,27 @@ https://github.com/user-attachments/assets/812a1990-13c3-4c45-8a8e-080f602c7a3f
 
 ## Table of Contents
 
+
 <details>
 <summary><strong>Click to expand</strong></summary>
 
-1. [The problem ASTon solves](#the-problem-aston-solves)
-2. [Quick start](#quick-start)
-3. [How it works](#how-it-works)
-4. [The 10 stages in detail](#the-10-stages-in-detail)
-5. [Command reference](#command-reference)
-6. [Run the complete workflow](#run-the-complete-workflow)
-7. [Example migration](#example-migration)
-8. [Project architecture](#project-architecture)
-9. [Generated files and directories](#generated-files-and-directories)
-10. [Installation](#installation)
-11. [Design principles](#design-principles)
-12. [Current scope & roadmap](#current-scope--roadmap)
-13. [FAQ & troubleshooting](#faq--troubleshooting)
-14. [Contributing](#contributing)
+1. The problem ASTon solves
+2. Quick start
+3. How it works
+4. The 10 stages in detail
+5. Command reference
+6. Run the complete workflow
+7. Example migration
+8. Project architecture
+9. Generated files and directories
+10. Installation
+11. Design principles
+12. Current scope & roadmap
+13. FAQ & troubleshooting
+14. Contributing
 
 </details>
+
 
 ---
 
@@ -160,6 +162,7 @@ aston pr --path aston/succ_migrations --repo demo   # 3. open the PR
 
 ### The full workflow (Mermaid)
 
+
 <details open>
 <summary><strong>View the complete migration workflow</strong></summary>
 
@@ -185,6 +188,7 @@ flowchart TD
 ```
 
 </details>
+
 
 ### Which CLI command runs which stages?
 
