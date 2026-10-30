@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 from mistralai.client import Mistral
 from pydantic import BaseModel, Field
 from aston.changes.chain import get_migration_chain, merge_rule_chain
-from aston.cli.console import success, error, warning, info
 
 load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -265,7 +264,7 @@ def validate_and_normalize_rules(
 ) -> list[dict]:
     """Validate candidates; retain uncertain candidates with needs_review."""
     if not rules:
-        info("Rule validation skipped: no extracted rules.")
+        print("Rule validation skipped: no extracted rules.")
         return []
     if not client:
         raise RuntimeError("MISTRAL_API_KEY is not set; cannot validate migration rules.")
@@ -322,7 +321,7 @@ version boundary values supplied by the caller. Do not invent evidence or URLs.
         )
         parsed = response.choices[0].message.parsed
         if parsed is None:
-            warning("Validator returned no parsed result; preserving candidates as needs_review.")
+            print("Validator returned no parsed result; preserving candidates as needs_review.")
             return preserve_for_review(rules, "the validator returned no parsed result")
         # Match validator output back to source candidates. If the validator
         # omitted any input, preserve it for review instead of silently losing it.
@@ -343,7 +342,7 @@ version boundary values supplied by the caller. Do not invent evidence or URLs.
                     None,
                 )
             if match_index is None:
-                warning(f"Validator returned an unmatched candidate {validated.get('old_api')!r}; ignoring extra output.")
+                print(f"Validator returned an unmatched candidate {validated.get('old_api')!r}; ignoring extra output.")
                 continue
             _, source = unmatched.pop(match_index)
             matched_results.append((source, validated))
@@ -411,18 +410,18 @@ version boundary values supplied by the caller. Do not invent evidence or URLs.
                     "validation_status": status,
                 })
         if omitted:
-            warning(f"Validator omitted {len(omitted)} input candidate(s); preserving them as needs_review.")
+            print(f"Validator omitted {len(omitted)} input candidate(s); preserving them as needs_review.")
             output.extend(preserve_for_review(omitted, "the validator omitted this input candidate"))
-        info("\n========== Rule Validation Summary ==========")
-        info(f"Candidate rules: {len(rules)}")
-        info(f"Validated: {sum(r.get('validation_status') == 'validated' for r in output)}")
-        info(f"Needs review: {sum(r.get('validation_status') == 'needs_review' for r in output)}")
-        info(f"Rejected: {rejected}")
-        info("==============================================\n")
+        print("\n========== Rule Validation Summary ==========")
+        print(f"Candidate rules: {len(rules)}")
+        print(f"Validated: {sum(r.get('validation_status') == 'validated' for r in output)}")
+        print(f"Needs review: {sum(r.get('validation_status') == 'needs_review' for r in output)}")
+        print(f"Rejected: {rejected}")
+        print("==============================================\n")
         return output
     except Exception as exc:
-        error(f"Rule validation failed: {exc}")
-        warning("Preserving extracted candidates as needs_review; none will be marked validated by this fallback.")
+        print(f"Rule validation failed: {exc}")
+        print("Preserving extracted candidates as needs_review; none will be marked validated by this fallback.")
         return preserve_for_review(rules, f"validator failure: {type(exc).__name__}: {exc}")
 
 
@@ -633,11 +632,11 @@ def _github_discussion_markdown(url: str) -> str | None:
             timeout=REQUEST_TIMEOUT,
         )
         if response.status_code != 200:
-            warning(f"GitHub GraphQL returned {response.status_code} for {url}")
+            print(f"GitHub GraphQL returned {response.status_code} for {url}")
             return None
         payload = response.json()
         if payload.get("errors"):
-            warning(f"GitHub GraphQL could not retrieve discussion {url}: {payload['errors']}")
+            print(f" GitHub GraphQL could not retrieve discussion {url}: {payload['errors']}")
             return None
         discussion = ((payload.get("data") or {}).get("repository") or {}).get("discussion")
         if not discussion or not isinstance(discussion.get("body"), str):
@@ -646,7 +645,7 @@ def _github_discussion_markdown(url: str) -> str | None:
         body = discussion["body"].strip()
         return (f"# {title}\n\n{body}" if title else body) or None
     except (requests.RequestException, ValueError, TypeError) as exc:
-        error(f"GitHub Discussion GraphQL fetch failed for {url}: {exc}")
+        print(f"GitHub Discussion GraphQL fetch failed for {url}: {exc}")
         return None
 
 
@@ -696,7 +695,7 @@ def extract_rules(
     if focus_symbols:
         # Process the most relevant chunks first, but still process every chunk.
         chunks.sort(key=lambda item: (-_chunk_priority(item[1], focus_symbols), item[0]))
-    info(
+    print(
         f"Extraction input: {len(doc_text)} total characters across "
         f"{len(chunks)} chunks; focus symbols: {len(focus_symbols)}"
     )
@@ -704,9 +703,9 @@ def extract_rules(
     for symbol in sorted(focus_symbols):
         position = lower_doc.find(symbol.casefold())
         if position >= 0:
-            info(f"Found {symbol!r} in combined docs at character {position}")
+            print(f"  Found {symbol!r} in combined docs at character {position}")
         else:
-            info(f"{symbol!r} does not appear literally in combined docs")
+            print(f"{symbol!r} does not appear literally in combined docs")
     focus_section = (
         "\n".join(f"- {symbol}" for symbol in sorted(focus_symbols))
         if focus_symbols else "(No specific focus symbols supplied.)"
@@ -716,7 +715,7 @@ def extract_rules(
     combined_blocks: list[str] = []
     seen_blocks: set[str] = set()
     for chunk_number, chunk_text in chunks:
-        info(f"Extracting chunk {chunk_number + 1}/{len(chunks)} ({len(chunk_text)} chars)")
+        print(f"Extracting chunk {chunk_number + 1}/{len(chunks)} ({len(chunk_text)} chars)")
         response = client.chat.parse(
             model="codestral-latest",
             messages=[
@@ -788,16 +787,16 @@ def extract_rules_cached(
                 rule.to_version = target_version
             return cached
         except Exception as exc:
-            warning(f"Invalid cache for {tag}; re-extracting ({exc})")
+            print(f"Invalid cache for {tag}; re-extracting ({exc})")
     if not should_extract(doc_text, stage0_symbols):
-        info(
+        print(
             f"{tag}: no relevant migration signal or scanned symbol; "
             "skipping LLM extraction without caching the empty result."
         )
         return MigrationRuleset()
     raw = extract_rules(package, doc_text, focus_symbols=stage0_symbols)
     if not raw.rules:
-        warning(f"{tag}: extraction returned no rules; result will not be cached.")
+        print(f"{tag}: extraction returned no rules; result will not be cached.")
         return raw
     raw_dicts = []
     for model in raw.rules:
@@ -820,13 +819,13 @@ def extract_rules_cached(
         rules=[MigrationRule.model_validate(r) for r in validated_dicts],
         raw_example_blocks=raw.raw_example_blocks,
     )
-
+    
     # Only cache if validation succeeded cleanly (no fallback errors or mass needs_review)
     has_fallback_warning = any("Validation could not establish trust" in str(r.get("description")) for r in validated_dicts)
     if not has_fallback_warning:
         cache_file.write_text(result.model_dump_json(indent=2))
     else:
-        warning(f"Skipping cache write for {tag} due to validation fallback/concerns.")
+        print(f"Skipping cache write for {tag} due to validation fallback/concerns.")
 
     return result
 
@@ -847,7 +846,7 @@ def get_latest_pypi_version(package_name: str) -> str | None:
         response.raise_for_status()
         return response.json().get("info", {}).get("version")
     except (requests.RequestException, ValueError) as exc:
-        error(f"PyPI lookup failed for {package_name}: {exc}")
+        print(f"PyPI lookup failed for {package_name}: {exc}")
         return None
 
 
@@ -867,7 +866,7 @@ def is_candidate_url(url: str) -> bool:
     """Permit major migration discussions, changelogs, and upgrade guides,
     while continuing to filter out noisy individual bug reports or PR diffs."""
     lower = url.lower()
-
+    
     # Block noisy PRs and issue comments, but KEEP discussions and migration pages
     if any(path in lower for path in ("/issues/", "/pull/")):
         return False
@@ -891,7 +890,7 @@ def fetch_page_content(url: str) -> str | None:
     ):
         markdown = _github_discussion_markdown(url)
         if markdown:
-            info(f"Retrieved GitHub Discussion Markdown ({len(markdown)} characters)")
+            print(f"  ✓ Retrieved GitHub Discussion Markdown ({len(markdown)} characters)")
             return markdown
     try:
         response = requests.get(
@@ -900,7 +899,7 @@ def fetch_page_content(url: str) -> str | None:
             timeout=REQUEST_TIMEOUT,
         )
         if response.status_code != 200:
-            error(f"HTTP {response.status_code} while fetching {url}")
+            print(f"HTTP {response.status_code} while fetching {url}")
             return None
         page = response.text
         # GitHub's article contains the useful body; discard page chrome when possible.
@@ -919,7 +918,7 @@ def fetch_page_content(url: str) -> str | None:
         # This cap is only for HTML fallback; GraphQL Discussion Markdown is not truncated.
         return cleaned[:100000]
     except requests.RequestException as exc:
-        error(f"Failed to fetch {url}: {exc}")
+        print(f"Failed to fetch {url}: {exc}")
         return None
 
 
@@ -942,10 +941,10 @@ def collect_linked_sources(initial_text: str, max_depth: int = 2) -> list[str]:
                 if url in visited:
                     continue
                 visited.add(url)
-                info(f"Following migration link (depth {depth + 1}): {url}")
+                print(f"  🔗 Following migration link (depth {depth + 1}): {url}")
                 content = fetch_page_content(url)
                 if content and len(content) > 100:
-                    info(f"Retrieved {len(content)} characters")
+                    print(f"    ✓ Retrieved {len(content)} characters")
                     next_level.append((url, content))
         current_level = next_level
         if not current_level:
@@ -986,11 +985,11 @@ def discover_release_doc(repo: str, tag: str) -> str | None:
         if response.status_code == 200:
             body = response.json().get("body", "")
     except requests.RequestException as exc:
-        error(f"Release lookup failed for {tag}: {exc}")
+        print(f"Release lookup failed for {tag}: {exc}")
 
     # Always check repository files if release body is short or missing comprehensive migration text
     if not body or len(body.strip()) < 200 or "migration" not in body.lower():
-        info(f"Checking repository migration files for {tag}...")
+        print(f"Checking repository migration files for {tag}...")
         candidates = (
             "MIGRATION.md", "migration.md", "CHANGELOG.md", "CHANGELOG.rst",
             "CHANGES.md", "docs/migration.md", "docs/MIGRATION.md", "docs/CHANGELOG.md",
@@ -1007,10 +1006,10 @@ def discover_release_doc(repo: str, tag: str) -> str | None:
             body = "\n\n".join(found) + "\n\n" + body
 
     if not body or len(body.strip()) < 20:
-        warning(f"Unresolved boundary: no documentation source found for {tag}")
+        print(f"Unresolved boundary: no documentation source found for {tag}")
         return None
 
-    info(f"Ingested documentation source for tag: {tag}")
+    print(f"Ingested documentation source for tag: {tag}")
     linked_docs = collect_linked_sources(body, max_depth=2)
     return "\n\n--- NEXT DOCUMENT IN CHAIN ---\n\n".join(linked_docs)[:50000]
 
@@ -1026,25 +1025,25 @@ def run_stage1_pipeline(
         raise ValueError("current_version and target_version are required for migration-chain resolution.")
     repo = resolve_github_repo(package_name)
     if not repo:
-        error(f"Failed to resolve GitHub repository for package {package_name}")
+        print(f"Failed to resolve GitHub repository for package {package_name}")
         return [], "", []
-    info(f"Resolving migration chain for '{package_name}' ({current_version} -> {target_version}) @ {repo}")
+    print(f"Resolving migration chain for '{package_name}' ({current_version} -> {target_version}) @ {repo}")
     try:
         tags_in_chain = get_migration_chain(repo, current_version, target_version)
     except (requests.RequestException, ValueError) as exc:
-        error(f"Could not resolve migration chain: {exc}")
+        print(f"Could not resolve migration chain: {exc}")
         return [], "", []
     if not tags_in_chain:
-        info("No version transition to process.")
+        print("No version transition to process.")
         return [], "", []
-    info(f"Target Version Boundaries: {tags_in_chain}")
+    print(f"Target Version Boundaries: {tags_in_chain}")
     rulesets_in_order: list[list[dict]] = []
     migration_docs: list[str] = []
     all_raw_example_blocks: list[dict] = []
     unresolved_boundaries: list[str] = []
     boundary_from_version = current_version
     for tag in tags_in_chain:
-        info(f"\nIngesting boundary: {tag}...")
+        print(f"\nIngesting boundary: {tag}...")
         doc_content = discover_release_doc(repo, tag)
         if not doc_content:
             unresolved_boundaries.append(tag)
@@ -1069,15 +1068,15 @@ def run_stage1_pipeline(
             })
         validated_count = sum(rule.validation_status == "validated" for rule in ruleset.rules)
         review_count = sum(rule.validation_status == "needs_review" for rule in ruleset.rules)
-        info(f"Processed {len(ruleset.rules)} candidates for {tag}: {validated_count} validated, {review_count} needs_review")
+        print(f"  └─ Processed {len(ruleset.rules)} candidates for {tag}: {validated_count} validated, {review_count} needs_review")
         boundary_from_version = tag
     if unresolved_boundaries:
-        warning("Unresolved documentation boundaries: " + ", ".join(unresolved_boundaries))
-        warning("Coverage is incomplete until these boundaries have usable sources.")
+        print("Unresolved documentation boundaries: " + ", ".join(unresolved_boundaries))
+        print("Coverage is incomplete until these boundaries have usable sources.")
     merged_rules = merge_rule_chain(rulesets_in_order)
-    info(f"merged_rules {merged_rules}")
+    print("merged_rules", merged_rules)
     migration_doc_text = "\n\n".join(migration_docs)
-    info(f"\nRule Chain Composition Complete. Total Merged Rules: {len(merged_rules)}")
-    info(f"Combined Migration Documentation: {len(migration_doc_text)} characters")
-
+    print(f"\nRule Chain Composition Complete. Total Merged Rules: {len(merged_rules)}")
+    # print(f"Combined Migration Documentation: {len(migration_doc_text)} characters")
+    
     return merged_rules, migration_doc_text, all_raw_example_blocks
