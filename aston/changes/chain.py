@@ -15,6 +15,7 @@ import requests
 from packaging.version import InvalidVersion, Version
 from requests.exceptions import RequestException
 from aston.exceptions import ConfigurationError
+from aston.Utils.utility import request_with_backoff
 
 
 GITHUB_API = "https://api.github.com"
@@ -47,27 +48,28 @@ def get_release_tags(repo: str) -> list[dict[str, Any]]:
     tags: list[dict[str, Any]] = []
     headers = _github_headers()
 
-    with requests.Session() as session:
-        for page in range(1, MAX_TAG_PAGES + 1):
-            response = session.get(
-                f"{GITHUB_API}/repos/{repo}/tags",
-                params={"per_page": 100, "page": page},
-                headers=headers,
-                timeout=REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-            batch = response.json()
-            if not batch:
-                break
+    for page in range(1, MAX_TAG_PAGES + 1):
+        response = request_with_backoff(
+            "GET",
+            f"{GITHUB_API}/repos/{repo}/tags",
+            max_retries=3,
+            backoff_factor=2.0,
+            params={"per_page": 100, "page": page},
+            headers=headers,
+        )
+        response.raise_for_status()
+        batch = response.json()
+        if not batch:
+            break
 
-            for item in batch:
-                name = item.get("name", "")
-                parsed = _parse_tag_version(name)
-                if parsed is not None:
-                    tags.append({"tag_name": name, "version": parsed})
+        for item in batch:
+            name = item.get("name", "")
+            parsed = _parse_tag_version(name)
+            if parsed is not None:
+                tags.append({"tag_name": name, "version": parsed})
 
-            if len(batch) < 100:
-                break
+        if len(batch) < 100:
+            break
 
     # Same version can occasionally have differently named tags. Keep one.
     by_version: dict[Version, dict[str, Any]] = {}

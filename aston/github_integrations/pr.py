@@ -8,6 +8,7 @@ import re
 import shutil
 import tempfile
 from aston.exceptions import GitHubError, ConfigurationError
+from aston.Utils.utility import request_with_backoff
 
 load_dotenv()
 
@@ -171,10 +172,12 @@ def create_migration_pr(
     repo_check_url = f"{GITHUB_API}/repos/{github_repo}"
 
     try:
-        check_response = requests.get(
+        check_response = request_with_backoff(
+            "GET",
             repo_check_url,
+            max_retries=3,
+            backoff_factor=2.0,
             headers=_github_headers(),
-            timeout=30,
         )
     except requests.RequestException as exc:
         raise GitHubError(
@@ -296,11 +299,13 @@ def create_migration_pr(
             }
 
             try:
-                response = requests.post(
+                response = request_with_backoff(
+                    "POST",
                     pr_url,
+                    max_retries=3,
+                    backoff_factor=2.0,
                     headers=_github_headers(),
                     json=payload,
-                    timeout=30,
                 )
             except requests.RequestException as exc:
                 raise GitHubError(
