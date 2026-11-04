@@ -11,6 +11,7 @@ from aston.github_integrations.pr import create_migration_pr
 from aston.ingestion import resolve_github_repo
 from uuid import uuid4
 from aston.cli.console import rich_success, error, warning, info
+from aston.exceptions import ConfigurationError, MigrationError, VerificationError
 
 
 
@@ -210,8 +211,9 @@ def migrate_repo(path: str):
     temp_req_path = root / "temp_requirements.txt"
 
     if not original_req_path.is_file():
-        raise FileNotFoundError(
-            f"Original requirements file not found: {original_req_path}"
+        raise ConfigurationError(
+            message=f"Original requirements file not found: {original_req_path}",
+            details="Ensure you are running 'aston check' inside a valid repository root containing requirements.txt."
         )
 
     req_lines = original_req_path.read_text(
@@ -339,11 +341,10 @@ def migrate_repo(path: str):
     info(f"Final Migration Summary — Passed: {len(passed_files)}, Failed: {len(failed_files)}")
 
     if failed_files:
-        error("\nPermanent Migration Failures Detected:")
-        for failed_path in failed_files:
-            print(f"   • File Path: {failed_path}")
-        info("Exiting due to unresolved migration errors.")
-        exit(1)
+        raise MigrationError(
+            message=f"Permanent migration failures detected in {len(failed_files)} file(s).",
+            details=", ".join(failed_files)
+        )
     else:
         rich_success("All files migrated successfully!")
         print("==================================================")
@@ -368,8 +369,11 @@ def migrate_repo(path: str):
             info(test_result["stdout"])
             info("--- STDERR ---")
             info(test_result["stderr"])
-            info("\nAborting PR creation due to failing integration test suite.")
-            exit(1)
+            
+            raise VerificationError(
+                message=f"Full-Repo Verification Failed with status: {test_result.get('status')}",
+                details=test_result.get("stderr") or test_result.get("stdout")
+            )
 
         rich_success("Full-Repo Test Suite Passed Successfully (Exit Code 0)!")
         info("Run, aston pr --path (path_value) for pr creation")
