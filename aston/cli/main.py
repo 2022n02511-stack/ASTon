@@ -4,6 +4,8 @@ from aston.repo_index.repo_map import migrate_repo
 from aston.poller import watcher  
 from aston.github_integrations.pr import create_migration_pr
 from aston.cli.console import rich_success, error, warning, info
+from aston.exceptions import AstonError
+import sys
 
 def main():
     parser = argparse.ArgumentParser(
@@ -84,26 +86,43 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "check":
-        if args.run:
-            info("Initiating migration pipeline...")
-            migrate_repo(args.path)
-        else:
-            info(f"Scanning repository at: {args.path}")
-            # Add standalone check logic here if needed
-            
-    elif args.command == "watcher":
-        info(f"Starting watcher on: {args.path}")
-        watcher(args.path)
+    try:
 
-    elif args.command == "pr":
-        create_migration_pr(
-            files_path=args.path,
-            repo_path=args.repo,
-            branch_name=args.branch,
-            title=args.title,
-            body=args.body,
-        )
+
+        if args.command == "check":
+            if args.run:
+                info("Initiating migration pipeline...")
+                migrate_repo(args.path)
+            else:
+                info(f"Scanning repository at: {args.path}")
+                # Add standalone check logic here if needed
+                
+        elif args.command == "watcher":
+            info(f"Starting watcher on: {args.path}")
+            watcher(args.path)
+
+        elif args.command == "pr":
+            create_migration_pr(
+                files_path=args.path,
+                repo_path=args.repo,
+                branch_name=args.branch,
+                title=args.title,
+                body=args.body,
+            )
+
+    except AstonError as exc:
+        error(f"[{type(exc).__name__}] {exc.message}")
+        if exc.details:
+            info(f"Details: {exc.details}")
+        sys.exit(exc.exit_code)
+
+    except KeyboardInterrupt:
+        info("\nOperation cancelled by user.")
+        sys.exit(130)
+
+    except Exception as exc:
+        error(f"[UncaughtError] An unexpected error occurred: {exc}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
