@@ -14,6 +14,7 @@ from typing import Any
 import requests
 from packaging.version import InvalidVersion, Version
 from requests.exceptions import RequestException
+from aston.exceptions import ConfigurationError
 
 
 GITHUB_API = "https://api.github.com"
@@ -97,13 +98,15 @@ def get_migration_chain(
         old_v = Version(old_version)
         new_v = Version(new_version)
     except InvalidVersion as exc:
-        raise ValueError(
-            f"Invalid package version range: {old_version!r} -> {new_version!r}"
+        raise ConfigurationError(
+            message=f"Invalid package version range specified: {old_version!r} -> {new_version!r}",
+            details="Provide valid semantic version strings for package upgrade boundaries."
         ) from exc
 
     if new_v < old_v:
-        raise ValueError(
-            f"Target version {new_v} is older than installed version {old_v}"
+        raise ConfigurationError(
+            message=f"Target version {new_v} is older than installed version {old_v}.",
+            details="ASTon upgrades packages forward; downgrade migration targets are unsupported."
         )
     if new_v == old_v:
         return []
