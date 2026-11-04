@@ -20,6 +20,7 @@ from aston.cli_ui.rich import (
     run_with_animation,
     print_aston_banner,
 )
+from aston.exceptions import ConfigurationError
 
 
 def _safe_read_text(path: Path) -> str:
@@ -77,9 +78,11 @@ def _save_successful_migration(
 
     try:
         relative_path = source_path.resolve().relative_to(repo_root)
-    except ValueError:
-        error(f"Migration source is outside repository root: {source_path}")
-        raise
+    except ValueError as exc:
+        raise ConfigurationError(
+            message=f"Migration source is outside repository root: {source_path}",
+            details="Ensure target files reside within the active repository directory."
+        ) from exc
 
     migration_root = Path(__file__).resolve().parent / "succ_migrations"
     migrated_path = migration_root / relative_path
@@ -434,10 +437,9 @@ def run_for_repo(
         target_version = dep_info.get("target_version")
 
         if not declared_version or not target_version:
-            raise ValueError(
-                f"Missing version specification for package '{module}': "
-                f"declared={declared_version!r}, "
-                f"target={target_version!r}"
+            raise ConfigurationError(
+                message=f"Missing version specification for package '{module}'.",
+                details=f"declared={declared_version!r}, target={target_version!r}"
             )
 
         current_version = declared_version
@@ -598,11 +600,11 @@ def run_for_repo(
 
     try:
         source_path.relative_to(root_path)
-    except ValueError:
-        raise ValueError(
-            f"Source file {source_path} is outside repository root "
-            f"{root_path}"
-        )
+    except ValueError as exc:
+        raise ConfigurationError(
+            message=f"Source file {source_path} is outside repository root {root_path}.",
+            details="All files targeted for migration must be located within the active repository workspace."
+        ) from exc
 
     original_path = source_path
     candidate_path = _candidate_path(source_path, run_id).resolve()
