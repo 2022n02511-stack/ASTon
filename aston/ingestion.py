@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from aston.changes.chain import get_migration_chain, merge_rule_chain
 from aston.cli.console import rich_success, error, warning, info
 from aston.exceptions import ConfigurationError
+from aston.Utils.utility import request_with_backoff
 
 
 load_dotenv()
@@ -629,13 +630,15 @@ def _github_discussion_markdown(url: str) -> str | None:
     }
     """
     try:
-        response = requests.post(
+        response = request_with_backoff(
+            "POST",
             "https://api.github.com/graphql",
+            max_retries=3,
+            backoff_factor=2.0,
             headers={**_github_headers(), "Accept": "application/vnd.github+json"},
             json={"query": query, "variables": {
                 "owner": owner, "name": repository, "number": int(number)
             }},
-            timeout=REQUEST_TIMEOUT,
         )
         if response.status_code != 200:
             error(f"GitHub GraphQL returned {response.status_code} for {url}")
@@ -846,9 +849,11 @@ def get_installed_version(package_name: str) -> str | None:
 
 def get_latest_pypi_version(package_name: str) -> str | None:
     try:
-        response = requests.get(
+        response = request_with_backoff(
+            "GET",
             f"https://pypi.org/pypi/{package_name}/json",
-            timeout=(3, 5),
+            max_retries=3,
+            backoff_factor=2.0,
         )
         response.raise_for_status()
         return response.json().get("info", {}).get("version")
@@ -858,7 +863,12 @@ def get_latest_pypi_version(package_name: str) -> str | None:
 
 
 def resolve_github_repo(package_name: str) -> Optional[str]:
-    response = requests.get(f"https://pypi.org/pypi/{package_name}/json", timeout=REQUEST_TIMEOUT)
+    response = request_with_backoff(
+        "GET",
+        f"https://pypi.org/pypi/{package_name}/json",
+        max_retries=3,
+        backoff_factor=2.0,
+    )
     if response.status_code != 200:
         return None
     project_urls = response.json().get("info", {}).get("project_urls") or {}
@@ -900,10 +910,12 @@ def fetch_page_content(url: str) -> str | None:
             info(f"Retrieved GitHub Discussion Markdown ({len(markdown)} characters)")
             return markdown
     try:
-        response = requests.get(
+        response = request_with_backoff(
+            "GET",
             url,
+            max_retries=3,
+            backoff_factor=2.0,
             headers={"User-Agent": "Aston-dependency-migration-tool"},
-            timeout=REQUEST_TIMEOUT,
         )
         if response.status_code != 200:
             error(f"HTTP {response.status_code} while fetching {url}")
@@ -961,11 +973,13 @@ def collect_linked_sources(initial_text: str, max_depth: int = 2) -> list[str]:
 
 def _fetch_repo_file(repo: str, tag: str, filename: str) -> str | None:
     url = f"{GITHUB_API}/repos/{repo}/contents/{filename}"
-    response = requests.get(
+    response = request_with_backoff(
+        "GET",
         url,
+        max_retries=3,
+        backoff_factor=2.0,
         params={"ref": tag},
         headers=_github_headers(),
-        timeout=REQUEST_TIMEOUT,
     )
     if response.status_code != 200:
         return None
@@ -977,7 +991,7 @@ def _fetch_repo_file(repo: str, tag: str, filename: str) -> str | None:
             return None
     download_url = data.get("download_url")
     if download_url:
-        raw = requests.get(download_url, timeout=REQUEST_TIMEOUT)
+        raw = request_with_backoff("GET", download_url, max_retries=3, backoff_factor=2.0)
         if raw.status_code == 200:
             return raw.text
     return None
@@ -988,7 +1002,13 @@ def discover_release_doc(repo: str, tag: str) -> str | None:
     release_url = f"{GITHUB_API}/repos/{repo}/releases/tags/{tag}"
     body = ""
     try:
-        response = requests.get(release_url, headers=_github_headers(), timeout=REQUEST_TIMEOUT)
+        response = request_with_backoff(
+            "GET",
+            release_url,
+            max_retries=3,
+            backoff_factor=2.0,
+            headers=_github_headers(),
+        )
         if response.status_code == 200:
             body = response.json().get("body", "")
     except requests.RequestException as exc:
