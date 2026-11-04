@@ -18,6 +18,7 @@ from mistralai.client import Mistral
 from pydantic import BaseModel, Field
 from aston.changes.chain import get_migration_chain, merge_rule_chain
 from aston.cli.console import rich_success, error, warning, info
+from aston.exceptions import ConfigurationError
 
 
 load_dotenv()
@@ -269,7 +270,10 @@ def validate_and_normalize_rules(
         warning("Rule validation skipped: no extracted rules.")
         return []
     if not client:
-        raise RuntimeError("MISTRAL_API_KEY is not set; cannot validate migration rules.")
+        raise ConfigurationError(
+            message="MISTRAL_API_KEY environment variable is missing or invalid.",
+            details="Set your MISTRAL_API_KEY in your environment or .env file before running rule validation."
+        )
     def preserve_for_review(source_rules: list[dict], reason: str) -> list[dict]:
         preserved = []
         for source_rule in source_rules:
@@ -683,8 +687,9 @@ def extract_rules(
 ) -> MigrationRuleset:
     """Extract evidence-grounded rules across the full document in focused chunks."""
     if not client:
-        raise RuntimeError(
-            "MISTRAL_API_KEY is not set; cannot extract migration rules."
+        raise ConfigurationError(
+            message="MISTRAL_API_KEY environment variable is missing or invalid.",
+            details="Set your MISTRAL_API_KEY in your environment or .env file before running rule extraction."
         )
     if not doc_text or len(doc_text.strip()) < 30:
         return MigrationRuleset()

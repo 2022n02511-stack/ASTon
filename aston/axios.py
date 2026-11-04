@@ -11,6 +11,7 @@ from aston.relevance import evaluate_relevance_and_completeness, canonicalize_us
 from aston.docker import verify_single_file_in_docker, VerificationResult
 from aston.relevance import normalize_api_symbol
 from aston.cli.console import rich_success, error, warning, info
+from aston.exceptions import ConfigurationError
 
 
 load_dotenv()
@@ -192,8 +193,9 @@ def code_patcher(
     """Stage 3 migration and Stage 5 verification-guided repair."""
 
     if not client:
-        raise RuntimeError(
-            "MISTRAL_API_KEY is not set; cannot run code patcher."
+        raise ConfigurationError(
+            message="MISTRAL_API_KEY environment variable is missing or invalid.",
+            details="Set your MISTRAL_API_KEY in your environment or .env file before running code patching."
         )
 
     # CHANGE: Require rules and matches for a normal migration, but don't
