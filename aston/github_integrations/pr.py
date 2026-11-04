@@ -7,6 +7,7 @@ from aston.cli.console import rich_success, error, warning, info
 import re
 import shutil
 import tempfile
+from aston.exceptions import GitHubError, ConfigurationError
 
 load_dotenv()
 
@@ -128,16 +129,22 @@ def create_migration_pr(
     migration_path = Path(files_path).expanduser().resolve()
 
     if not GITHUB_TOKEN:
-        error("GITHUB_TOKEN is not set. Skipping automated PR creation.")
-        return None
+        raise ConfigurationError(
+            message="GITHUB_TOKEN environment variable is missing.",
+            details="Set your GITHUB_TOKEN in your environment before attempting automated PR creation."
+        )
 
     if not root.is_dir():
-        error(f"Git repository directory not found: {root}")
-        return None
+        raise ConfigurationError(
+            message=f"Git repository directory not found: {root}",
+            details="Ensure the target repository path points to a valid local directory."
+        )
 
     if not migration_path.is_dir():
-        error(f"Migration output directory not found: {migration_path}")
-        return None
+        raise ConfigurationError(
+            message=f"Migration output directory not found: {migration_path}",
+            details="Ensure the migration runner has successfully generated outputs prior to PR creation."
+        )
 
     source_files = [
         path for path in migration_path.rglob("*")
@@ -151,8 +158,10 @@ def create_migration_pr(
     github_repo = get_git_remote_repo(root)
 
     if not github_repo:
-        error("Could not detect a valid GitHub 'origin' remote.")
-        return None
+        raise GitHubError(
+            message="Could not detect a valid GitHub 'origin' remote URL.",
+            details=f"Inspect git remotes in repository root: {root}"
+        )
 
     info(
         f"\nPreparing Pull Request for '{github_repo}' "
@@ -168,15 +177,16 @@ def create_migration_pr(
             timeout=30,
         )
     except requests.RequestException as exc:
-        error(f"GitHub repository check failed: {exc}")
-        return None
+        raise GitHubError(
+            message=f"GitHub API connectivity check failed for repository '{github_repo}'.",
+            details=str(exc)
+        ) from exc
 
     if check_response.status_code != 200:
-        error(
-            f"Target repository '{github_repo}' does not exist "
-            "or token lacks access."
+        raise GitHubError(
+            message=f"Target repository '{github_repo}' does not exist or your GITHUB_TOKEN lacks access permissions.",
+            details=f"HTTP Status: {check_response.status_code} - {check_response.text}"
         )
-        return None
 
     worktree_path = None
 
@@ -192,8 +202,10 @@ def create_migration_pr(
             )
 
             if not ok:
-                error(f"Failed to fetch origin/main: {err}")
-                return None
+                raise GitHubError(
+                    message="Failed to fetch origin/main from remote repository.",
+                    details=err
+                )
 
             # Create an isolated branch based on origin/main.
             ok, err = run_git_command(
@@ -210,8 +222,10 @@ def create_migration_pr(
             )
 
             if not ok:
-                error(f"Failed to create isolated migration branch: {err}")
-                return None
+                raise GitHubError(
+                    message=f"Failed to create isolated migration worktree branch '{branch_name}'.",
+                    details=err
+                )
 
             # Copy migrated files into the isolated worktree.
             relative_files = []
@@ -240,8 +254,10 @@ def create_migration_pr(
             )
 
             if not ok:
-                error(f"Failed to stage migration files: {err}")
-                return None
+                raise GitHubError(
+                    message="Failed to stage migration files in worktree.",
+                    details=err
+                )
 
             # Commit changes.
             ok, err = run_git_command(
@@ -250,8 +266,10 @@ def create_migration_pr(
             )
 
             if not ok:
-                error(f"Failed to commit migration files: {err}")
-                return None
+                raise GitHubError(
+                    message="Failed to commit migrated files.",
+                    details=err
+                )
 
             # Push isolated branch.
             info(f"Pushing branch {branch_name} to remote...")
@@ -262,8 +280,10 @@ def create_migration_pr(
             )
 
             if not ok:
-                error(f"Failed to push branch: {err}")
-                return None
+                raise GitHubError(
+                    message=f"Failed to push branch '{branch_name}' to remote origin.",
+                    details=err
+                )
 
             # Create GitHub pull request.
             pr_url = f"{GITHUB_API}/repos/{github_repo}/pulls"
@@ -283,8 +303,10 @@ def create_migration_pr(
                     timeout=30,
                 )
             except requests.RequestException as exc:
-                error(f"GitHub PR request failed: {exc}")
-                return None
+                raise GitHubError(
+                    message="Network request failed while creating GitHub Pull Request.",
+                    details=str(exc)
+                ) from exc
 
             if response.status_code in (201, 200):
                 html_url = response.json().get("html_url")
@@ -293,11 +315,10 @@ def create_migration_pr(
                 )
                 return html_url
 
-            error(
-                f"Failed to create GitHub PR "
-                f"({response.status_code}): {response.text}"
+            raise GitHubError(
+                message=f"GitHub API rejected pull request creation (HTTP {response.status_code}).",
+                details=response.text
             )
-            return None
 
     finally:
         # Remove the temporary worktree without touching the original repo.
