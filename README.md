@@ -1,5 +1,4 @@
 ```python
-
  █████╗ ███████╗████████╗ ██████╗ ███╗   ██╗
 ██╔══██╗██╔════╝╚══██╔══╝██╔═══██╗████╗  ██║
 ███████║███████╗   ██║   ██║   ██║██╔██╗ ██║
@@ -15,11 +14,7 @@
  ╚═════╝╚══════╝╚═╝
 ```
 
-
-
 https://github.com/user-attachments/assets/812a1990-13c3-4c45-8a8e-080f602c7a3f
-
-
 
 ### Automated dependency migration, from breaking-change detection to a verified pull request.
 
@@ -29,6 +24,7 @@ https://github.com/user-attachments/assets/812a1990-13c3-4c45-8a8e-080f602c7a3f
 ![Status](https://img.shields.io/badge/status-active%20development-2ECC71?labelColor=1a1b1e)
 
 **[Quick Start](#quick-start)** •
+**[Live Demo](#aston-migration-demonstration)** •
 **[How It Works](#how-it-works)** •
 **[Commands](#command-reference)** •
 **[Architecture](#project-architecture)** •
@@ -41,27 +37,26 @@ https://github.com/user-attachments/assets/812a1990-13c3-4c45-8a8e-080f602c7a3f
 
 ## Table of Contents
 
-
 <details>
 <summary><strong>Click to expand</strong></summary>
 
 1. The problem ASTon solves
 2. Quick start
-3. How it works
-4. The 10 stages in detail
-5. Command reference
-6. Run the complete workflow
-7. Example migration
-8. Project architecture
-9. Generated files and directories
-10. Installation
-11. Design principles
-12. Current scope & roadmap
-13. FAQ & troubleshooting
-14. Contributing
+3. ASTon migration demonstration
+4. How it works
+5. The 10 stages in detail
+6. Command reference
+7. Run the complete workflow
+8. Example migration
+9. Project architecture
+10. Generated files and directories
+11. Installation
+12. Design principles
+13. Current scope & roadmap
+14. FAQ & troubleshooting
+15. Contributing
 
 </details>
-
 
 ---
 
@@ -123,6 +118,62 @@ aston pr --path aston/succ_migrations --repo demo   # 3. open the PR
 
 ---
 
+## ASTon Migration Demonstration
+
+This repository demonstrates ASTon's end-to-end dependency migration workflow using a Python application built with the legacy OpenAI Python SDK.
+
+ASTon analyzed the repository, identified deprecated API usage across multiple Python modules, generated migration changes, verified the updated code, and submitted a GitHub pull request that was subsequently merged.
+
+The demo recording is at the top of this README.
+
+### Migration details
+
+- **Source dependency:** `openai==0.28.1`
+- **Target dependency:** `openai==3.41.0`
+- **Migration scope:** Multiple Python modules
+- **Verification:** Docker-based verification and repository-wide tests
+
+### Migration evidence
+
+| Artifact | Link |
+|---|---|
+| Original legacy code | [Initial commit](https://github.com/2022n02511-stack/demo_aston/commit/10cce48d300d828c774e56ed2e72066c2e993b33) |
+| ASTon-generated changes | [Migration commit](https://github.com/2022n02511-stack/demo_aston/commit/66547808b4b4868a6684718c2d095928a5b6605a) |
+| Merged migration | [Merge commit](https://github.com/2022n02511-stack/demo_aston/commit/caaea1080b9c7e603c6917fa0fd16c77ee93c8a2) |
+| Complete code comparison | [View before-and-after diff](https://github.com/2022n02511-stack/demo_aston/compare/10cce48d300d828c774e56ed2e72066c2e993b33...caaea1080b9c7e603c6917fa0fd16c77ee93c8a2) |
+| ASTon source code | [GitHub repository](https://github.com/2022n02511-stack/ASTon) |
+
+### What this demonstrates
+
+1. Breaking-change discovery from dependency documentation.
+2. Identification of affected code across multiple modules.
+3. Automated migration rule generation and code modification.
+4. Docker-based verification and repository-wide testing.
+5. GitHub pull request creation and merging.
+
+<details>
+<summary><strong>Reproduce this demo</strong></summary>
+
+<br>
+
+Clone the demo project next to ASTon and run the same three commands from the quick start:
+
+```bash
+git clone https://github.com/2022n02511-stack/demo_aston.git demo
+
+aston watcher --path demo
+aston check --run --path demo
+aston pr --path aston/succ_migrations --repo demo
+```
+
+> The demo project starts on the legacy `openai==0.28.1` code, so it shows the same before-and-after the links above describe.
+
+</details>
+
+**Note:** This is a demonstration project designed to showcase ASTon's migration capabilities, not a production customer deployment.
+
+---
+
 ## How it works
 
 ### The 30-second view
@@ -162,7 +213,6 @@ aston pr --path aston/succ_migrations --repo demo   # 3. open the PR
 
 ### The full workflow (Mermaid)
 
-
 <details open>
 <summary><strong>View the complete migration workflow</strong></summary>
 
@@ -188,7 +238,6 @@ flowchart TD
 ```
 
 </details>
-
 
 ### Which CLI command runs which stages?
 
@@ -218,7 +267,7 @@ ASTon includes a watcher that monitors dependencies and identifies available upd
 
 ```text
 Current dependency: openai==0.28.1
-Available version:  3.29.0
+Available version:  3.41.0
 ```
 
 It also keeps version-related state so previously processed updates can be tracked.
@@ -552,12 +601,14 @@ aston pr \
  └──────┬───────┘       └────────┬─────────┘       └─────┬──────┘
         │ fail                   │ fail                  │ fail
         ▼                        ▼                       ▼
-      stop                  stop                 stop
+      stop                     stop                    stop
 ```
 
 ---
 
 ## Example migration
+
+This is the migration shown in the [demonstration above](#aston-migration-demonstration).
 
 Your project uses:
 
@@ -568,17 +619,17 @@ openai==0.28.1
 You want to move to:
 
 ```text
-openai==3.29.0
+openai==3.41.0
 ```
 
 ```mermaid
 flowchart TD
-    A["openai 0.28.1"] --> B["Discover target 3.29.0"]
+    A["openai 0.28.1"] --> B["Discover target 3.41.0"]
     B --> C["Collect migration documentation"]
     C --> D["Extract API migration rules"]
     D --> E["Scan project for OpenAI usage"]
     E --> F["Identify relevant rules"]
-    F --> G["Validate rules for 3.29.0"]
+    F --> G["Validate rules for 3.41.0"]
     G --> H["Generate migrated Python files"]
     H --> I["Verify and repair"]
     I --> J["Verify complete repository"]
@@ -666,7 +717,7 @@ Instead of manually hunting down every affected API, you receive a **pull reques
 
 ```bash
 # 1. Clone
-git clone https://github.com/YOUR_USERNAME/ASTon.git
+git clone https://github.com/2022n02511-stack/ASTon.git
 cd ASTon
 
 # 2. Install the project
@@ -679,7 +730,7 @@ pip install -r requirements.txt
 aston --help
 ```
 
-Then configure the environment variables required by your selected **LLM provider** and **GitHub integration**.
+Then configure the environment variables required by your selected **LLM provider** and **GitHub integration**. A template is provided in `.env.example`.
 
 ---
 
@@ -698,18 +749,20 @@ Then configure the environment variables required by your selected **LLM provide
 
 ## Current scope & roadmap
 
-ASTon is under **active development**. The current implementation focuses on **Python** dependency migrations, with the **OpenAI Python SDK** as an important test case.
+ASTon is under **active development**. The current implementation focuses on **Python** dependency migrations, with the **OpenAI Python SDK** as the test case demonstrated above. It has been run end to end on one demo project so far.
 
 The architecture separates ingestion, rule extraction, repository analysis, code generation, verification, and delivery, so more packages can be supported without tying the system to one library.
 
 - [x] Dependency watching
 - [x] Documentation ingestion & rule extraction
 - [x] AST-based repository usage mapping
-- [x] Version-aware rule validation
 - [x] Docker-isolated per-file verification with repair
 - [x] Full-repository verification
 - [x] GitHub pull request creation
+- [ ] Version-aware rule validation across more version chains (in progress)
+- [ ] Reliability across more real-world repositories
 - [ ] Support for additional Python packages
+- [ ] `pip install` distribution
 - [ ] Broader language ecosystem support
 
 ---
