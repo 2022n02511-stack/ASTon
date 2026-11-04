@@ -9,11 +9,28 @@ import shutil
 import tempfile
 from aston.exceptions import GitHubError, ConfigurationError
 from aston.Utils.utility import request_with_backoff
+import subprocess
+from aston.exceptions import ConfigurationError
 
 load_dotenv()
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_API = "https://api.github.com"
+
+def verify_clean_git_workspace(repo_path: Path):
+    """Ensure the user has no uncommitted changes before starting."""
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_path,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.stdout.strip():
+        raise ConfigurationError(
+            message="Uncommitted changes detected in repository workspace.",
+            details="Please commit or stash your changes before running ASTon migration."
+        )
 
 # \# def clone_repo_from_github(github_repo: str, target_dir: str = "./workspace") -> Path | None:
 # \#     """
@@ -188,7 +205,7 @@ def create_migration_pr(
     if check_response.status_code != 200:
         raise GitHubError(
             message=f"Target repository '{github_repo}' does not exist or your GITHUB_TOKEN lacks access permissions.",
-            details=f"HTTP Status: {check_response.status_code} - {check_response.text}"
+            details=f"HTTP Status: {check_response.status_code}\n{check_response.text}"
         )
 
     worktree_path = None

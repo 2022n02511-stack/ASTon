@@ -341,39 +341,50 @@ def migrate_repo(path: str):
     info(f"Final Migration Summary — Passed: {len(passed_files)}, Failed: {len(failed_files)}")
 
     if failed_files:
-        raise MigrationError(
-            message=f"Permanent migration failures detected in {len(failed_files)} file(s).",
-            details=", ".join(failed_files)
+        warning(
+            f"Migration completed with partial failures. "
+            f"{len(failed_files)} file(s) failed after repair attempts."
         )
+        info("Detailed debugging artifacts remain preserved inaston/artifacts/runs/.")
+        info("Proceeding with full-repo verification and PR creation for successfully migrated files...")
     else:
         rich_success("All files migrated successfully!")
-        print("==================================================")
-        print("--- [Stage 6] Repo-Wide Integration Verification ---")
-        print("==================================================")
 
-        migration_root = Path(__file__).resolve().parents[1] / "succ_migrations"
-
-        test_result = verify_full_repo_in_docker(
-            str(root),
-            migration_root,
-            migration_root / "requirements.txt",
+    # Ensure we have at least some successfully migrated files to verify/PR
+    if not passed_files:
+        error("No files passed migration. Aborting full-repo verification and PR creation.")
+        raise MigrationError(
+            message="Migration failed across all target files.",
+            details=", ".join(failed_files)
         )
 
-        if test_result.get("status") == "PASS":
-            temp_req_path.unlink(missing_ok=True)
+    print("==================================================")
+    print("--- [Stage 6] Repo-Wide Integration Verification ---")
+    print("==================================================")
 
-        if not test_result["success"]:
-            error("Full-Repo Verification Failed!")
-            info(f"Exit Code: {test_result['exit_code']}")
-            info("--- STDOUT ---")
-            info(test_result["stdout"])
-            info("--- STDERR ---")
-            info(test_result["stderr"])
-            
-            raise VerificationError(
-                message=f"Full-Repo Verification Failed with status: {test_result.get('status')}",
-                details=test_result.get("stderr") or test_result.get("stdout")
-            )
+    migration_root = Path(__file__).resolve().parents[1] / "succ_migrations"
 
-        rich_success("Full-Repo Test Suite Passed Successfully (Exit Code 0)!")
-        info("Run, aston pr --path (path_value) for pr creation")
+    test_result = verify_full_repo_in_docker(
+        str(root),
+        migration_root,
+        migration_root / "requirements.txt",
+    )
+
+    if test_result.get("status") == "PASS":
+        temp_req_path.unlink(missing_ok=True)
+
+    if not test_result["success"]:
+        error("Full-Repo Verification Failed!")
+        info(f"Exit Code: {test_result['exit_code']}")
+        info("--- STDOUT ---")
+        info(test_result["stdout"])
+        info("--- STDERR ---")
+        info(test_result["stderr"])
+        
+        raise VerificationError(
+            message=f"Full-Repo Verification Failed with status: {test_result.get('status')}",
+            details=test_result.get("stderr") or test_result.get("stdout")
+        )
+
+    rich_success("Full-Repo Test Suite Passed Successfully (Exit Code 0)!")
+    info("Run, aston pr --path (path_value) for pr creation")
