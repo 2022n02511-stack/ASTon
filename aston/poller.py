@@ -4,6 +4,7 @@ from packaging.requirements import Requirement
 from packaging.version import InvalidVersion, Version
 from aston.ingestion import get_latest_pypi_version
 from aston.cli.console import info, error, warning, rich_success
+from aston.exceptions import ConfigurationError
 
 
 MAX_WORKERS = 10
@@ -85,14 +86,18 @@ def watcher(repo_path: str | Path) -> None:
     req_file = repo_dir / "requirements.txt"
 
     if not req_file.is_file():
-        warning(f"No requirements.txt found in {repo_dir}")
-        return
+        raise ConfigurationError(
+            message=f"No requirements.txt found in repository path: {repo_dir}",
+            details="Ensure the target directory contains a valid requirements.txt file before running the watcher."
+        )
 
     try:
         lines = req_file.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        error(f"Could not read {req_file}: {exc}")
-        return
+        raise ConfigurationError(
+            message=f"Could not read requirements file: {req_file}",
+            details=str(exc)
+        ) from exc
 
     # Ignore blank lines, comments, and pip directives.
     requirement_lines = [
