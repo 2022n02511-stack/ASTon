@@ -11,16 +11,6 @@ from aston.github_integrations.pr import create_migration_pr
 from aston.ingestion import resolve_github_repo
 from uuid import uuid4
 from aston.cli.console import rich_success, error, warning, info
-from aston.exceptions import (
-    AstonError,
-    ConfigurationError,
-    IngestionError,
-    LLMError,
-    ScanningError,
-    MigrationError,
-    VerificationError,
-    GitHubError,
-)
 
 
 
@@ -74,13 +64,7 @@ def repo_map(repo_path: str) -> dict:
 
     for py_file in py_files:
         relative_path = str(py_file.relative_to(root))
-        try:
-            parsed = parser(py_file, relative_path=relative_path)
-        except Exception as e:
-            raise ScanningError(
-                message=f"Failed to parse Python file AST: {relative_path}",
-                details=str(e)
-            ) from e
+        parsed = parser(py_file, relative_path=relative_path)
         
         all_files_data[relative_path] = {
             "parse_status": parsed["file_meta"]["parse_status"],
@@ -199,18 +183,12 @@ def migrate_repo(path: str):
         target_version = dep_data.get('target_version')
 
         if declared_version is not None:
-            try:
-                composed_rules, doc_text, raw_code_examples = run_stage1_pipeline(
-                    module, 
-                    declared_version, 
-                    target_version, 
-                    repo_index["symbols"]
-                )
-            except Exception as e:
-                raise LLMError(
-                    message=f"Failed to fetch or ingest migration rules for module '{module}' via LLM pipeline.",
-                    details=str(e)
-                ) from e
+            composed_rules, doc_text, raw_code_examples = run_stage1_pipeline(
+                module, 
+                declared_version, 
+                target_version, 
+                repo_index["symbols"]
+            )
             # info("composed_rules: ", composed_rules)
             # print(raw_code_examples)
             
@@ -232,9 +210,8 @@ def migrate_repo(path: str):
     temp_req_path = root / "temp_requirements.txt"
 
     if not original_req_path.is_file():
-        raise ConfigurationError(
-            message=f"Original requirements file not found: {original_req_path}",
-            details="Ensure you are running 'aston check' inside a valid repository root containing requirements.txt."
+        raise FileNotFoundError(
+            f"Original requirements file not found: {original_req_path}"
         )
 
     req_lines = original_req_path.read_text(
@@ -362,10 +339,11 @@ def migrate_repo(path: str):
     info(f"Final Migration Summary — Passed: {len(passed_files)}, Failed: {len(failed_files)}")
 
     if failed_files:
-        raise MigrationError(
-            message=f"Permanent migration failures detected in {len(failed_files)} file(s).",
-            details=", ".join(failed_files)
-        )
+        error("\nPermanent Migration Failures Detected:")
+        for failed_path in failed_files:
+            print(f"   • File Path: {failed_path}")
+        info("Exiting due to unresolved migration errors.")
+        exit(1)
     else:
         rich_success("All files migrated successfully!")
         print("==================================================")
@@ -384,10 +362,14 @@ def migrate_repo(path: str):
             temp_req_path.unlink(missing_ok=True)
 
         if not test_result["success"]:
-            raise VerificationError(
-                message="Full-Repo Verification Failed inside Docker sandbox.",
-                details=f"Exit Code: {test_result.get('exit_code')}\nStderr: {test_result.get('stderr')}"
-            )
+            error("Full-Repo Verification Failed!")
+            info(f"Exit Code: {test_result['exit_code']}")
+            info("--- STDOUT ---")
+            info(test_result["stdout"])
+            info("--- STDERR ---")
+            info(test_result["stderr"])
+            info("\nAborting PR creation due to failing integration test suite.")
+            exit(1)
 
         rich_success("Full-Repo Test Suite Passed Successfully (Exit Code 0)!")
         info("Run, aston pr --path (path_value) for pr creation")

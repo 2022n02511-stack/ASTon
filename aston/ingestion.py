@@ -18,16 +18,6 @@ from mistralai.client import Mistral
 from pydantic import BaseModel, Field
 from aston.changes.chain import get_migration_chain, merge_rule_chain
 from aston.cli.console import rich_success, error, warning, info
-from aston.exceptions import (
-    AstonError,
-    ConfigurationError,
-    IngestionError,
-    LLMError,
-    ScanningError,
-    MigrationError,
-    VerificationError,
-    GitHubError,
-)
 
 
 load_dotenv()
@@ -279,10 +269,7 @@ def validate_and_normalize_rules(
         warning("Rule validation skipped: no extracted rules.")
         return []
     if not client:
-        raise ConfigurationError(
-            message="MISTRAL_API_KEY environment variable is missing or invalid.",
-            details="Set your MISTRAL_API_KEY in your environment or .env file before running rule extraction."
-        )
+        raise RuntimeError("MISTRAL_API_KEY is not set; cannot validate migration rules.")
     def preserve_for_review(source_rules: list[dict], reason: str) -> list[dict]:
         preserved = []
         for source_rule in source_rules:
@@ -336,10 +323,8 @@ version boundary values supplied by the caller. Do not invent evidence or URLs.
         )
         parsed = response.choices[0].message.parsed
         if parsed is None:
-            raise LLMError(
-                message="Rule validator returned no parsed result.",
-                details="Codestral failed to return a structured validation response."
-            )
+            warning("Validator returned no parsed result; preserving candidates as needs_review.")
+            return preserve_for_review(rules, "the validator returned no parsed result")
         # Match validator output back to source candidates. If the validator
         # omitted any input, preserve it for review instead of silently losing it.
         unmatched = list(enumerate(rules))
@@ -733,39 +718,31 @@ def extract_rules(
     seen_blocks: set[str] = set()
     for chunk_number, chunk_text in chunks:
         info(f"Extracting chunk {chunk_number + 1}/{len(chunks)} ({len(chunk_text)} chars)")
-        try:
-            response = client.chat.parse(
-                model="codestral-latest",
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Package name: {package}\n\n"
-                            "FOCUS SYMBOLS OBSERVED IN THE CODEBASE:\n"
-                            f"{focus_section}\n\n"
-                            f"DOCUMENT CHUNK: {chunk_number + 1} of {len(chunks)}\n"
-                            "Extract only rules supported by this chunk. Prioritize evidence "
-                            "relevant to the focus symbols. Version boundaries are assigned "
-                            "by Python. Do not invent replacements when the source is uncertain.\n\n"
-                            f"Documentation chunk:\n{chunk_text}"
-                        ),
-                    },
-                ],
-                response_format=MigrationRuleset,
-                temperature=0,
-            )
-        except Exception as exc:
-            raise LLMError(
-                message=f"Mistral API request failed during rule extraction for package '{package}' (chunk {chunk_number + 1}).",
-                details=str(exc)
-            ) from exc
-
+        response = client.chat.parse(
+            model="codestral-latest",
+            messages=[
+                {"role": "system", "content": prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Package name: {package}\n\n"
+                        "FOCUS SYMBOLS OBSERVED IN THE CODEBASE:\n"
+                        f"{focus_section}\n\n"
+                        f"DOCUMENT CHUNK: {chunk_number + 1} of {len(chunks)}\n"
+                        "Extract only rules supported by this chunk. Prioritize evidence "
+                        "relevant to the focus symbols. Version boundaries are assigned "
+                        "by Python. Do not invent replacements when the source is uncertain.\n\n"
+                        f"Documentation chunk:\n{chunk_text}"
+                    ),
+                },
+            ],
+            response_format=MigrationRuleset,
+            temperature=0,
+        )
         parsed = response.choices[0].message.parsed
         if parsed is None:
-            raise LLMError(
-                message=f"Codestral returned no parsed ruleset for package '{package}', chunk {chunk_number + 1}.",
-                details="The model returned an empty or unparseable response structure."
+            raise RuntimeError(
+                f"Codestral returned no parsed ruleset for {package}, chunk {chunk_number + 1}"
             )
         normalized = normalize_rule_symbols(
             [rule.model_dump() for rule in parsed.rules]

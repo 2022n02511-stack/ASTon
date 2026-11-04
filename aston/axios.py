@@ -11,16 +11,6 @@ from aston.relevance import evaluate_relevance_and_completeness, canonicalize_us
 from aston.docker import verify_single_file_in_docker, VerificationResult
 from aston.relevance import normalize_api_symbol
 from aston.cli.console import rich_success, error, warning, info
-from aston.exceptions import (
-    AstonError,
-    ConfigurationError,
-    IngestionError,
-    LLMError,
-    ScanningError,
-    MigrationError,
-    VerificationError,
-    GitHubError,
-)
 
 
 load_dotenv()
@@ -202,9 +192,8 @@ def code_patcher(
     """Stage 3 migration and Stage 5 verification-guided repair."""
 
     if not client:
-        raise ConfigurationError(
-            message="MISTRAL_API_KEY environment variable is missing or invalid.",
-            details="Set your MISTRAL_API_KEY in your environment or .env file before running code patching."
+        raise RuntimeError(
+            "MISTRAL_API_KEY is not set; cannot run code patcher."
         )
 
     # CHANGE: Require rules and matches for a normal migration, but don't
@@ -295,25 +284,19 @@ CURRENT SOURCE CODE TO MIGRATE OR REPAIR:
 {source_code}
 """
 
-    try:
-        response = client.chat.complete(
-            model="codestral-latest",
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": cont,
-                },
-            ],
-        )
-    except Exception as exc:
-        raise LLMError(
-            message="Mistral API request failed during code generation/patching.",
-            details=str(exc)
-        ) from exc
+    response = client.chat.complete(
+        model="codestral-latest",
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt,
+            },
+            {
+                "role": "user",
+                "content": cont,
+            },
+        ],
+    )
 
     patched = response.choices[0].message.content
     clean = clean_mistral_code(patched)

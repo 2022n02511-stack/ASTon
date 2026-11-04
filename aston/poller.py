@@ -4,16 +4,6 @@ from packaging.requirements import Requirement
 from packaging.version import InvalidVersion, Version
 from aston.ingestion import get_latest_pypi_version
 from aston.cli.console import info, error, warning, rich_success
-from aston.exceptions import (
-    AstonError,
-    ConfigurationError,
-    IngestionError,
-    LLMError,
-    ScanningError,
-    MigrationError,
-    VerificationError,
-    GitHubError,
-)
 
 
 MAX_WORKERS = 10
@@ -95,18 +85,8 @@ def watcher(repo_path: str | Path) -> None:
     req_file = repo_dir / "requirements.txt"
 
     if not req_file.is_file():
-        raise ConfigurationError(
-            message=f"No requirements.txt found in repository path: {repo_dir}",
-            details="Ensure the repository contains a valid requirements.txt file before running the watcher."
-        )
-
-    try:
-        lines = req_file.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise ConfigurationError(
-            message=f"Could not read requirements file: {req_file}",
-            details=str(exc)
-        ) from exc
+        warning(f"No requirements.txt found in {repo_dir}")
+        return
 
     try:
         lines = req_file.read_text(encoding="utf-8").splitlines()
@@ -191,11 +171,6 @@ def watcher(repo_path: str | Path) -> None:
         error(f"{len(failures)} package lookup(s) failed:")
         for package, error_message in failures:
             error(f"- {package}: {error_message}")
-            
-        raise IngestionError(
-            message=f"Failed to fetch version metadata for {len(failures)} package(s) from PyPI.",
-            details="Check your network connection or verify that the package names exist on PyPI."
-        )
 
     if breaking_changes:
         warning(
