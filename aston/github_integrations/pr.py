@@ -11,8 +11,10 @@ from aston.exceptions import GitHubError, ConfigurationError
 from aston.Utils.utility import request_with_backoff
 import subprocess
 from aston.exceptions import ConfigurationError
+from aston.config import load_config
 
 load_dotenv()
+
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_API = "https://api.github.com"
@@ -142,6 +144,12 @@ def create_migration_pr(
     Commits selected migration files in an isolated Git worktree,
     pushes them to GitHub, and creates a pull request.
     """
+    # Load configuration settings for base branch and draft status
+    config = load_config()
+    gh_cfg = config.get("github", {})
+
+    target_base = gh_cfg.get("default_base_branch", "main")
+    is_draft = gh_cfg.get("draft_prs", False)
 
     root = Path(repo_path).expanduser().resolve()
     migration_path = Path(files_path).expanduser().resolve()
@@ -183,7 +191,7 @@ def create_migration_pr(
 
     info(
         f"\nPreparing Pull Request for '{github_repo}' "
-        f"on branch '{branch_name}'..."
+        f"on branch '{branch_name}' targeting '{target_base}' (Draft: {is_draft})..."
     )
 
     repo_check_url = f"{GITHUB_API}/repos/{github_repo}"
@@ -215,19 +223,19 @@ def create_migration_pr(
 
             worktree_path = Path(temp_dir) / "repo"
 
-            # Fetch the latest target branch.
+            # Fetch the latest configured base branch dynamically.
             ok, err = run_git_command(
-                ["git", "fetch", "origin", "main"],
+                ["git", "fetch", "origin", target_base],
                 cwd=root,
             )
 
             if not ok:
                 raise GitHubError(
-                    message="Failed to fetch origin/main from remote repository.",
+                    message=f"Failed to fetch origin/{target_base} from remote repository.",
                     details=err
                 )
 
-            # Create an isolated branch based on origin/main.
+            # Create an isolated branch based on the configured base branch.
             ok, err = run_git_command(
                 [
                     "git",
@@ -236,7 +244,7 @@ def create_migration_pr(
                     "-b",
                     branch_name,
                     str(worktree_path),
-                    "origin/main",
+                    f"origin/{target_base}",
                 ],
                 cwd=root,
             )
@@ -305,14 +313,15 @@ def create_migration_pr(
                     details=err
                 )
 
-            # Create GitHub pull request.
+            # Create GitHub pull request utilizing configured base and draft status.
             pr_url = f"{GITHUB_API}/repos/{github_repo}/pulls"
 
             payload = {
                 "title": title,
                 "body": body,
                 "head": branch_name,
-                "base": "main",
+                "base": target_base,
+                "draft": is_draft,
             }
 
             try:
