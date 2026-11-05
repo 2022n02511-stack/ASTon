@@ -10,7 +10,7 @@ class BaseLLMProvider(ABC):
 
 class MistralProvider(BaseLLMProvider):
     def generate(self, prompt: str, model: str, temperature: float = 0.0, system_prompt: str = None, response_format=None) -> str:
-        from mistralai import Mistral
+        from mistralai.client import Mistral
         api_key = os.getenv("MISTRAL_API_KEY")
         if not api_key:
             raise LLMError(
@@ -140,7 +140,12 @@ class GoogleProvider(BaseLLMProvider):
                 contents=prompt,
                 config=types.GenerateContentConfig(**config_kwargs)
             )
-            return response.text.strip()
+            
+            # If response_format is used and parsed object is available, return it directly
+            if response_format and hasattr(response, "parsed") and response.parsed is not None:
+                return response.parsed
+                
+            return response.text.strip() if response.text else ""
         except Exception as exc:
             raise LLMError(
                 message="Google Gemini API generation failed.",

@@ -410,7 +410,7 @@ def run_for_repo(
     passed_files: list,
     failed_files: list,
     max_tries: int,
-    dokcer_file_time
+    docker_file_time  
 ):
     with open("repo_index.json", "r", encoding="utf-8") as f:
         repo_index = json.load(f)
@@ -683,7 +683,7 @@ def run_for_repo(
             str(candidate_path),
             temp_req_path,
             repo_root=root_path,
-            timeout=dokcer_file_time
+            timeout=docker_file_time
         )
 
         context_data = {
@@ -734,7 +734,7 @@ def run_for_repo(
             temp_req_path=temp_req_path,
             context_data=context_data,
             root_path=root_path,
-            docker_time=dokcer_file_time,
+            docker_time=docker_file_time,
             initial_result=pr,
             max_retries=max_tries,
             passed_files=passed_files,

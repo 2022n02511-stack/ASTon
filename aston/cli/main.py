@@ -199,12 +199,6 @@ def main():
                 
                 migrate_repo(
                     path=args.path,
-                    provider=provider_name,
-                    model=model_name,
-                    per_file_retries=per_file_retries,
-                    sweep_passes=sweep_passes,
-                    docker_file_timeout=file_timeout,
-                    docker_repo_timeout=repo_timeout
                 )
             else:
                 info(f"Scanning repository at: {args.path}")

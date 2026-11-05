@@ -1,11 +1,12 @@
 """Embedding helper using the legacy OpenAI SDK interface."""
 
-import openai
 from openai import OpenAI
+import os
+
+client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
 
 def embed_text(text: str) -> list[float]:
     """Create an embedding using the pre-v1 Embedding API."""
-    client = OpenAI()
     response = client.embeddings.create(
         model="text-embedding-ada-002",
         input=text,

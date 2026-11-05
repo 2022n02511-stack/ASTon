@@ -328,17 +328,23 @@ Validate each candidate independently. Preserve source metadata and exact
 version boundary values supplied by the caller. Do not invent evidence or URLs.
 """
     try:
-        response = call_llm(prompt=user_prompt, provider=provider_name, model=model_name, temperature=temperature, system_prompt=VALIDATOR_SYSTEM_PROMPT, response_format=ValidatedRuleset)
-        parsed = response.choices[0].message.parsed
-        if parsed is None:
+        response = call_llm(
+            prompt=user_prompt, 
+            provider=provider_name, 
+            model=model_name, 
+            temperature=temperature, 
+            system_prompt=VALIDATOR_SYSTEM_PROMPT, 
+            response_format=ValidatedRuleset
+        )
+        parsed = response
+        if parsed is None or not hasattr(parsed, "rules"):
             warning("Validator returned no parsed result; preserving candidates as needs_review.")
             return preserve_for_review(rules, "the validator returned no parsed result")
-        # Match validator output back to source candidates. If the validator
-        # omitted any input, preserve it for review instead of silently losing it.
+            
         unmatched = list(enumerate(rules))
         matched_results: list[tuple[dict, dict]] = []
         for validated_model in parsed.rules:
-            validated = validated_model.model_dump()
+            validated = validated_model.model_dump() if hasattr(validated_model, "model_dump") else dict(validated_model)
             key = _candidate_key(validated)
             match_index = next(
                 (i for i, (_, source) in enumerate(unmatched) if _candidate_key(source) == key),
@@ -741,16 +747,26 @@ def extract_rules(
             f"Documentation chunk:\n{chunk_text}"
         )
 
-        response = call_llm(prompt=content, provider=provider_name, model=model_name, temperature=temperature, system_prompt=prompt, response_format=MigrationRule)
-        
-        parsed = response.choices[0].message.parsed
-        if parsed is None:
-            raise RuntimeError(
-                f"Codestral returned no parsed ruleset for {package}, chunk {chunk_number + 1}"
-            )
-        normalized = normalize_rule_symbols(
-            [rule.model_dump() for rule in parsed.rules]
+        response = call_llm(
+            prompt=content, 
+            provider=provider_name, 
+            model=model_name, 
+            temperature=temperature, 
+            system_prompt=prompt, 
+            response_format=MigrationRuleset
         )
+        
+        parsed = response
+        
+        # Gracefully handle empty or unparsed chunks instead of raising an error
+        if parsed is None or not hasattr(parsed, "rules") or not parsed.rules:
+            info(f"Chunk {chunk_number + 1} returned no rules for {package}; skipping chunk.")
+            continue
+            
+        normalized = normalize_rule_symbols(
+            [rule.model_dump() if hasattr(rule, "model_dump") else dict(rule) for rule in parsed.rules]
+        )
+        
         for rule in normalized:
             rule["package"] = package
             source_url = rule.get("source_url")

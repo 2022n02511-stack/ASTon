@@ -313,7 +313,7 @@ CURRENT SOURCE CODE TO MIGRATE OR REPAIR:
             time.sleep(delay)
             delay *= 2.0
 
-    patched = response.choices[0].message.content
+    patched = response
     clean = clean_mistral_code(patched)
 
     try:
