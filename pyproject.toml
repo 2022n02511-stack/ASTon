@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astoncli"  # Available on PyPI, while your internal app and CLI command remain 'aston'
-version = "0.1.0"
+version = "0.1.1"
 description = "Automated Python repository migration CLI tool"
 readme = "README.md"
 requires-python = ">=3.11"
