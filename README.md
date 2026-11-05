@@ -18,6 +18,7 @@ https://github.com/user-attachments/assets/812a1990-13c3-4c45-8a8e-080f602c7a3f
 
 ### Automated dependency migration, from breaking-change detection to a verified pull request.
 
+![PyPI](https://img.shields.io/pypi/v/astoncli?color=2ECC71&labelColor=1a1b1e&logo=pypi&logoColor=2ECC71)
 ![Python](https://img.shields.io/badge/python-3.x-2ECC71?labelColor=1a1b1e&logo=python&logoColor=2ECC71)
 ![Docker](https://img.shields.io/badge/verified%20in-Docker-2ECC71?labelColor=1a1b1e&logo=docker&logoColor=2ECC71)
 ![GitHub PRs](https://img.shields.io/badge/delivers-GitHub%20PRs-2ECC71?labelColor=1a1b1e&logo=github&logoColor=2ECC71)
@@ -715,6 +716,17 @@ Instead of manually hunting down every affected API, you receive a **pull reques
 
 ## Installation
 
+### From PyPI (recommended)
+
+```bash
+pip install astoncli
+aston --help
+```
+
+The package is named `astoncli` on PyPI, and the command it installs is `aston`.
+
+### From source
+
 ```bash
 # 1. Clone
 git clone https://github.com/2022n02511-stack/ASTon.git
@@ -731,6 +743,8 @@ aston --help
 ```
 
 Then configure the environment variables required by your selected **LLM provider** and **GitHub integration**. A template is provided in `.env.example`.
+
+> **External requirements:** Docker must be installed and running, and you need an API key for your LLM provider and a GitHub token for pull requests. Installing the package does not provide these.
 
 ---
 
@@ -762,7 +776,7 @@ The architecture separates ingestion, rule extraction, repository analysis, code
 - [ ] Version-aware rule validation across more version chains (in progress)
 - [ ] Reliability across more real-world repositories
 - [ ] Support for additional Python packages
-- [ ] `pip install` distribution
+- [x] `pip install astoncli` distribution
 - [ ] Broader language ecosystem support
 
 ---
