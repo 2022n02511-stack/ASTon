@@ -26,6 +26,8 @@ def handle_config_show():
         "MISTRAL_API_KEY": "Present" if os.getenv("MISTRAL_API_KEY") else "Missing",
         "OPENAI_API_KEY": "Present" if os.getenv("OPENAI_API_KEY") else "Missing",
         "GITHUB_TOKEN": "Present" if os.getenv("GITHUB_TOKEN") else "Missing",
+        "GEMINI_API_KEY": "Present" if os.getenv("GEMINI_API_KEY") else "Missing",
+        "ANTHROPIC_API_KEY": "Present" if os.getenv("ANTHROPIC_API_KEY") else "Missing",
     }
     
     display_data = {
@@ -168,9 +170,9 @@ def handle_doctor(test_llm: bool = False, repo_path: str = "."):
     failed_count = 0
     for name, success, details in checks:
         if success:
-            print(f"  [✔] {name}: {details}")
+            rich_success(f"{name}: {details}")
         else:
-            print(f"  [✘] {name}: {details}")
+            warning(f"{name}: {details}")
             failed_count += 1
 
     print("\n" + "-"*40)
