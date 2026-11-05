@@ -20,6 +20,7 @@ def handle_config_show():
     # Inject environment variable statuses (without exposing secrets)
     env_status = {
         "MISTRAL_API_KEY": "Present" if os.getenv("MISTRAL_API_KEY") else "Missing",
+        "OPENAI_API_KEY": "Present" if os.getenv("OPENAI_API_KEY") else "Missing",
         "GITHUB_TOKEN": "Present" if os.getenv("GITHUB_TOKEN") else "Missing",
     }
     

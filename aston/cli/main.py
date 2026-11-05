@@ -173,6 +173,7 @@ def main():
             llm_config = config.get("llm", {})
 
             # Resolve parameters with precedence: CLI flag -> Config file -> Default
+            provider_name = args.provider or llm_config.get("provider", "mistral")
             model_name = args.model or llm_config.get("model", "codestral-latest")
             per_file_retries = args.repair_retries if args.repair_retries is not None else mig_config.get("per_file_repair_retries", 3)
             sweep_passes = args.sweep_passes if args.sweep_passes is not None else mig_config.get("failed_files_sweep_passes", 2)
@@ -183,10 +184,11 @@ def main():
                 info("Checking git workspace status...")
                 verify_clean_git_workspace(repo_path)
 
-                info(f"Initiating migration pipeline [Model: {model_name}, Per-File Retries: {per_file_retries}, Sweep Passes: {sweep_passes}]...")
+                info(f"Initiating migration pipeline [Provider: {provider_name}, Model: {model_name}, Per-File Retries: {per_file_retries}]...")
                 
                 migrate_repo(
                     path=args.path,
+                    provider=provider_name,
                     model=model_name,
                     per_file_retries=per_file_retries,
                     sweep_passes=sweep_passes,
