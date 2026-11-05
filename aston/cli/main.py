@@ -34,9 +34,20 @@ def main():
     )
 
     # Doctor command
-    subparsers.add_parser(
+    doctor_parser = subparsers.add_parser(
         "doctor",
         help="Run system diagnostics and environment health checks"
+    )
+    doctor_parser.add_argument(
+        "--test-llm",
+        action="store_true",
+        help="Perform a live API round-trip ping to the configured LLM provider"
+    )
+    doctor_parser.add_argument(
+        "--path",
+        type=str,
+        default=".",
+        help="Path to repository workspace to check for accessibility"
     )
 
     # Check command
@@ -162,7 +173,7 @@ def main():
                 handle_config_show()
 
         elif args.command == "doctor":
-            handle_doctor()
+            handle_doctor(test_llm=args.test_llm, repo_path=args.path)
 
         elif args.command == "check":
             repo_path = Path(args.path).expanduser().resolve()
