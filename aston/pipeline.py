@@ -84,8 +84,7 @@ def _save_successful_migration(
             details="Ensure target files reside within the active repository directory."
         ) from exc
 
-    # Explicitly anchor succ_migrations to the target repository root, not the package source folder
-    migration_root = repo_root / "succ_migrations"
+    migration_root = Path(__file__).resolve().parent / "succ_migrations"
     migrated_path = migration_root / relative_path
 
     migrated_path.parent.mkdir(parents=True, exist_ok=True)

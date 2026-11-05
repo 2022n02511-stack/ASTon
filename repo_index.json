@@ -15,7 +15,7 @@
          },
          "resolved": null,
          "installed": null,
-         "target_version": "3.41.0",
+         "target_version": "3.45.0",
          "provenance_status": "declared"
       },
       "requests": {
@@ -209,7 +209,7 @@
       },
       "utils/legacy_embeddings.py": {
          "parse_status": "success",
-         "sha256": "f69e21c912ea404d34b53aa9c5e01ea85b8804a69e864bb087d6355f2eee1b74",
+         "sha256": "66663b0c9ca4210acea2dc93293def010e4f87e9f9beb3cf9abdba179a991037",
          "imports": [
             {
                "module": "openai",
