@@ -55,6 +55,42 @@ def main():
         default=Path.cwd(),
         help="Repository directory to analyze",
     )
+    check_parser.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        help="Override LLM provider (e.g., mistral, openai, anthropic)",
+    )
+    check_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Override LLM model (e.g., codestral-latest, gpt-4o)",
+    )
+    check_parser.add_argument(
+        "--repair-retries",
+        type=int,
+        default=None,
+        help="Max per-file LLM repair attempts (overrides config)",
+    )
+    check_parser.add_argument(
+        "--sweep-passes",
+        type=int,
+        default=None,
+        help="Max pipeline sweep passes for remaining failed files (overrides config)",
+    )
+    check_parser.add_argument(
+        "--file-timeout",
+        type=int,
+        default=None,
+        help="Docker timeout in seconds for single file checks",
+    )
+    check_parser.add_argument(
+        "--repo-timeout",
+        type=int,
+        default=None,
+        help="Docker timeout in seconds for repo-wide tests",
+    )
 
     # Watcher command
     watcher_parser = subparsers.add_parser(
@@ -73,35 +109,41 @@ def main():
         "pr",
         help="Create a pull request for migrated files",
     )
-
     pr_parser.add_argument(
         "--path",
         type=str,
         required=True,
         help="Directory containing the migrated files to commit",
     )
-
     pr_parser.add_argument(
         "--repo",
         type=str,
         required=True,
         help="Target Git repository root",
     )
-
     pr_parser.add_argument(
         "--branch",
         type=str,
         default="chore/openai-v1-migration",
         help="Branch name for the migration",
     )
-
+    pr_parser.add_argument(
+        "--base",
+        type=str,
+        default=None,
+        help="Target base branch for the PR (defaults to config value)",
+    )
+    pr_parser.add_argument(
+        "--draft",
+        action="store_true",
+        help="Create the PR as a draft",
+    )
     pr_parser.add_argument(
         "--title",
         type=str,
         default="chore: migrate OpenAI SDK to v1.0+ via ASTon",
         help="Commit/PR title",
     )
-
     pr_parser.add_argument(
         "--body",
         type=str,
@@ -123,14 +165,34 @@ def main():
             handle_doctor()
 
         elif args.command == "check":
-            if args.run:
-                repo_path = Path(args.path).expanduser().resolve()
+            repo_path = Path(args.path).expanduser().resolve()
+            
+            # Load user configuration
+            config = load_config()
+            mig_config = config.get("migration", {})
+            llm_config = config.get("llm", {})
 
+            # Resolve parameters with precedence: CLI flag -> Config file -> Default
+            model_name = args.model or llm_config.get("model", "codestral-latest")
+            per_file_retries = args.repair_retries if args.repair_retries is not None else mig_config.get("per_file_repair_retries", 3)
+            sweep_passes = args.sweep_passes if args.sweep_passes is not None else mig_config.get("failed_files_sweep_passes", 2)
+            file_timeout = args.file_timeout if args.file_timeout is not None else mig_config.get("docker_file_timeout_seconds", 45)
+            repo_timeout = args.repo_timeout if args.repo_timeout is not None else mig_config.get("docker_repo_timeout_seconds", 300)
+
+            if args.run:
                 info("Checking git workspace status...")
                 verify_clean_git_workspace(repo_path)
 
-                info("Initiating migration pipeline...")
-                migrate_repo(args.path)
+                info(f"Initiating migration pipeline [Model: {model_name}, Per-File Retries: {per_file_retries}, Sweep Passes: {sweep_passes}]...")
+                
+                migrate_repo(
+                    path=args.path,
+                    model=model_name,
+                    per_file_retries=per_file_retries,
+                    sweep_passes=sweep_passes,
+                    docker_file_timeout=file_timeout,
+                    docker_repo_timeout=repo_timeout
+                )
             else:
                 info(f"Scanning repository at: {args.path}")
                 
@@ -139,10 +201,20 @@ def main():
             watcher(args.path)
 
         elif args.command == "pr":
+            config = load_config()
+            github_config = config.get("github", {})
+
+            target_base = args.base or github_config.get("default_base_branch", "main")
+            is_draft = args.draft or github_config.get("draft_prs", False)
+
+            info(f"Creating Pull Request targeting base branch: '{target_base}' (Draft: {is_draft})")
+
             create_migration_pr(
                 files_path=args.path,
                 repo_path=args.repo,
                 branch_name=args.branch,
+                base_branch=target_base,
+                draft=is_draft,
                 title=args.title,
                 body=args.body,
             )

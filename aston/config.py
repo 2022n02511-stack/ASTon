@@ -10,13 +10,16 @@ LOGS_DIR = CONFIG_DIR / "logs"
 
 DEFAULT_CONFIG = {
     "llm": {
-        "model": "gpt-4o",
+        "provider": "mistral",           # Default LLM provider
+        "model": "codestral-latest",
         "temperature": 0.0,
         "max_retries": 3,
     },
     "migration": {
-        "max_repair_retries": 2,
-        "docker_timeout_seconds": 300,
+        "per_file_repair_retries": 3,      # LLM repair loops per individual file
+        "failed_files_sweep_passes": 2,    # Outer pipeline runs to retry remaining failed files
+        "docker_file_timeout_seconds": 300, # Timeout for single-file sandbox checks
+        "docker_repo_timeout_seconds": 300,# Timeout for repo-wide test suites
     },
     "github": {
         "default_base_branch": "main",

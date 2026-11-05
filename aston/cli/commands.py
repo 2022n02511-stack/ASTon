@@ -19,7 +19,7 @@ def handle_config_show():
     
     # Inject environment variable statuses (without exposing secrets)
     env_status = {
-        "OPENAI_API_KEY": "Present" if os.getenv("OPENAI_API_KEY") else "Missing",
+        "MISTRAL_API_KEY": "Present" if os.getenv("MISTRAL_API_KEY") else "Missing",
         "GITHUB_TOKEN": "Present" if os.getenv("GITHUB_TOKEN") else "Missing",
     }
     
@@ -44,11 +44,11 @@ def handle_doctor():
         warning(f"[WARN] Configuration file missing at {CONFIG_FILE}. Run `aston init`.")
         passed = False
 
-    # 2. Check OpenAI API Key
-    if os.getenv("OPENAI_API_KEY"):
-        rich_success("[OK] OPENAI_API_KEY environment variable is set.")
+    # 2. Check MISTRAL API Key
+    if os.getenv("MISTRAL_API_KEY"):
+        rich_success("[OK] MISTRAL_API_KEY environment variable is set.")
     else:
-        error("[FAIL] OPENAI_API_KEY environment variable is missing.")
+        error("[FAIL] MISTRAL_API_KEY environment variable is missing.")
         passed = False
 
     # 3. Check GitHub Token
