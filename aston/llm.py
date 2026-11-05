@@ -4,12 +4,12 @@ from aston.exceptions import LLMError
 
 class BaseLLMProvider(ABC):
     @abstractmethod
-    def generate(self, prompt: str, model: str, temperature: float = 0.0, system_prompt: str = None) -> str:
+    def generate(self, prompt: str, model: str, temperature: float = 0.0, system_prompt: str = None, response_format=None) -> str | object:
         pass
 
 
 class MistralProvider(BaseLLMProvider):
-    def generate(self, prompt: str, model: str, temperature: float = 0.0, system_prompt: str = None) -> str:
+    def generate(self, prompt: str, model: str, temperature: float = 0.0, system_prompt: str = None, response_format=None) -> str:
         from mistralai import Mistral
         api_key = os.getenv("MISTRAL_API_KEY")
         if not api_key:
@@ -25,11 +25,15 @@ class MistralProvider(BaseLLMProvider):
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
 
-            response = client.chat.complete(
-                model=model,
-                messages=messages,
-                temperature=temperature
-            )
+            kwargs = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature
+            }
+            if response_format:
+                kwargs["response_format"] = {"type": "json_object"}
+
+            response = client.chat.complete(**kwargs)
             return response.choices[0].message.content.strip()
         except Exception as exc:
             raise LLMError(
@@ -39,7 +43,7 @@ class MistralProvider(BaseLLMProvider):
 
 
 class OpenAIProvider(BaseLLMProvider):
-    def generate(self, prompt: str, model: str, temperature: float = 0.0, system_prompt: str = None) -> str:
+    def generate(self, prompt: str, model: str, temperature: float = 0.0, system_prompt: str = None, response_format=None):
         from openai import OpenAI
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -55,12 +59,21 @@ class OpenAIProvider(BaseLLMProvider):
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
 
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature
-            )
-            return response.choices[0].message.content.strip()
+            if response_format:
+                completion = client.beta.chat.completions.parse(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    response_format=response_format,
+                )
+                return completion.choices[0].message.parsed
+            else:
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature
+                )
+                return completion.choices[0].message.content.strip()
         except Exception as exc:
             raise LLMError(
                 message="OpenAI API generation failed.",
@@ -69,7 +82,7 @@ class OpenAIProvider(BaseLLMProvider):
 
 
 class AnthropicProvider(BaseLLMProvider):
-    def generate(self, prompt: str, model: str, temperature: float = 0.0, system_prompt: str = None) -> str:
+    def generate(self, prompt: str, model: str, temperature: float = 0.0, system_prompt: str = None, response_format=None) -> str:
         import anthropic
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
@@ -87,7 +100,10 @@ class AnthropicProvider(BaseLLMProvider):
                 "messages": [{"role": "user", "content": prompt}]
             }
             if system_prompt:
-                kwargs["system"] = system_prompt
+                sys_content = system_prompt
+                if response_format:
+                    sys_content += "\nProvide your response strictly as a valid JSON object matching the requested schema."
+                kwargs["system"] = sys_content
 
             response = client.messages.create(**kwargs)
             return response.content[0].text.strip()
@@ -99,7 +115,7 @@ class AnthropicProvider(BaseLLMProvider):
 
 
 class GoogleProvider(BaseLLMProvider):
-    def generate(self, prompt: str, model: str, temperature: float = 0.0, system_prompt: str = None) -> str:
+    def generate(self, prompt: str, model: str, temperature: float = 0.0, system_prompt: str = None, response_format=None):
         from google import genai
         from google.genai import types
         
@@ -114,6 +130,10 @@ class GoogleProvider(BaseLLMProvider):
             config_kwargs = {"temperature": temperature}
             if system_prompt:
                 config_kwargs["system_instruction"] = system_prompt
+
+            if response_format:
+                config_kwargs["response_mime_type"] = "application/json"
+                config_kwargs["response_schema"] = response_format
 
             response = client.models.generate_content(
                 model=model,
@@ -141,8 +161,9 @@ def call_llm(
     provider: str = "mistral", 
     model: str = "codestral-latest", 
     temperature: float = 0.0, 
-    system_prompt: str = None
-) -> str:
+    system_prompt: str = None,
+    response_format=None
+) -> str | object:
     provider_lower = provider.lower()
     if provider_lower not in _PROVIDERS:
         supported = list(_PROVIDERS.keys())
@@ -156,5 +177,6 @@ def call_llm(
         prompt=prompt, 
         model=model, 
         temperature=temperature, 
-        system_prompt=system_prompt
+        system_prompt=system_prompt,
+        response_format=response_format
     )

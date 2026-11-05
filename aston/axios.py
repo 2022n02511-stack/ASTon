@@ -13,8 +13,17 @@ from aston.relevance import normalize_api_symbol
 from aston.cli.console import rich_success, error, warning, info
 from aston.exceptions import ConfigurationError, LLMError
 import time
+from aston.llm import call_llm
+from aston.config import load_config
 
 load_dotenv()
+config = load_config()
+
+llm_cfg = config.get("llm", {})
+provider_name = llm_cfg.get("provider", "mistral")
+model_name = llm_cfg.get("model", "codestral-latest")
+temperature = llm_cfg.get("temperature", 0.0)
+max_retries = llm_cfg.get("max_retries", 3)
 
 API_KEY = os.environ.get("MISTRAL_API_KEY")
 client = Mistral(api_key=API_KEY) if API_KEY else None
@@ -286,25 +295,13 @@ CURRENT SOURCE CODE TO MIGRATE OR REPAIR:
 {source_code}
 """
 
-    max_retries = 3
+
     delay = 2.0
     response = None
 
     for attempt in range(1, max_retries + 1):
         try:
-            response = client.chat.complete(
-                model="codestral-latest",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": system_prompt,
-                    },
-                    {
-                        "role": "user",
-                        "content": cont,
-                    },
-                ],
-            )
+            response = call_llm(prompt=cont, provider=provider_name, model=model_name, temperature=temperature, system_prompt=system_prompt)
             break
         except Exception as exc:
             if attempt == max_retries:
