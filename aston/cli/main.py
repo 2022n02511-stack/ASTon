@@ -6,6 +6,8 @@ from aston.github_integrations.pr import create_migration_pr, verify_clean_git_w
 from aston.cli.console import rich_success, error, warning, info
 from aston.exceptions import AstonError
 import sys
+from aston.cli.commands import handle_config_show, handle_doctor, handle_init
+from aston.config import load_config
 
 def main():
     parser = argparse.ArgumentParser(
@@ -13,6 +15,29 @@ def main():
         description="ASTon: Automated repo analyzer and migration CLI tool."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Init command
+    subparsers.add_parser(
+        "init",
+        help="Initialize ASTon configuration directory and default config.yaml"
+    )
+
+    # Config command
+    config_parser = subparsers.add_parser(
+        "config",
+        help="Manage ASTon configuration settings"
+    )
+    config_subparsers = config_parser.add_subparsers(dest="subcommand", required=True)
+    config_subparsers.add_parser(
+        "show",
+        help="Display current configuration and environment status"
+    )
+
+    # Doctor command
+    subparsers.add_parser(
+        "doctor",
+        help="Run system diagnostics and environment health checks"
+    )
 
     # Check command
     check_parser = subparsers.add_parser(
@@ -87,9 +112,17 @@ def main():
     args = parser.parse_args()
 
     try:
+        if args.command == "init":
+            handle_init()
 
+        elif args.command == "config":
+            if args.subcommand == "show":
+                handle_config_show()
 
-        if args.command == "check":
+        elif args.command == "doctor":
+            handle_doctor()
+
+        elif args.command == "check":
             if args.run:
                 repo_path = Path(args.path).expanduser().resolve()
 
@@ -100,7 +133,6 @@ def main():
                 migrate_repo(args.path)
             else:
                 info(f"Scanning repository at: {args.path}")
-                # Add standalone check logic here if needed
                 
         elif args.command == "watcher":
             info(f"Starting watcher on: {args.path}")
