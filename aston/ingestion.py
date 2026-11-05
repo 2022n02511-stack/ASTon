@@ -20,6 +20,17 @@ from aston.changes.chain import get_migration_chain, merge_rule_chain
 from aston.cli.console import rich_success, error, warning, info
 from aston.exceptions import ConfigurationError
 from aston.Utils.utility import request_with_backoff
+from aston.llm import call_llm
+from aston.config import load_config
+
+
+config = load_config()
+
+llm_cfg = config.get("llm", {})
+provider_name = llm_cfg.get("provider", "mistral")
+model_name = llm_cfg.get("model", "codestral-latest")
+temperature = llm_cfg.get("temperature", 0.0)
+# max_retries = llm_cfg.get("max_retries", 3)
 
 
 load_dotenv()
@@ -317,15 +328,7 @@ Validate each candidate independently. Preserve source metadata and exact
 version boundary values supplied by the caller. Do not invent evidence or URLs.
 """
     try:
-        response = client.chat.parse(
-            model="codestral-latest",
-            messages=[
-                {"role": "system", "content": VALIDATOR_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format=ValidatedRuleset,
-            temperature=0,
-        )
+        response = call_llm(prompt=user_prompt, provider=provider_name, model=model_name, temperature=temperature, system_prompt=VALIDATOR_SYSTEM_PROMPT, response_format=ValidatedRuleset)
         parsed = response.choices[0].message.parsed
         if parsed is None:
             warning("Validator returned no parsed result; preserving candidates as needs_review.")
@@ -726,27 +729,20 @@ def extract_rules(
     seen_blocks: set[str] = set()
     for chunk_number, chunk_text in chunks:
         info(f"Extracting chunk {chunk_number + 1}/{len(chunks)} ({len(chunk_text)} chars)")
-        response = client.chat.parse(
-            model="codestral-latest",
-            messages=[
-                {"role": "system", "content": prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Package name: {package}\n\n"
-                        "FOCUS SYMBOLS OBSERVED IN THE CODEBASE:\n"
-                        f"{focus_section}\n\n"
-                        f"DOCUMENT CHUNK: {chunk_number + 1} of {len(chunks)}\n"
-                        "Extract only rules supported by this chunk. Prioritize evidence "
-                        "relevant to the focus symbols. Version boundaries are assigned "
-                        "by Python. Do not invent replacements when the source is uncertain.\n\n"
-                        f"Documentation chunk:\n{chunk_text}"
-                    ),
-                },
-            ],
-            response_format=MigrationRuleset,
-            temperature=0,
+
+        content = (
+            f"Package name: {package}\n\n"
+            "FOCUS SYMBOLS OBSERVED IN THE CODEBASE:\n"
+            f"{focus_section}\n\n"
+            f"DOCUMENT CHUNK: {chunk_number + 1} of {len(chunks)}\n"
+            "Extract only rules supported by this chunk. Prioritize evidence "
+            "relevant to the focus symbols. Version boundaries are assigned "
+            "by Python. Do not invent replacements when the source is uncertain.\n\n"
+            f"Documentation chunk:\n{chunk_text}"
         )
+
+        response = call_llm(prompt=content, provider=provider_name, model=model_name, temperature=temperature, system_prompt=prompt, response_format=MigrationRule)
+        
         parsed = response.choices[0].message.parsed
         if parsed is None:
             raise RuntimeError(

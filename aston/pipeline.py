@@ -221,6 +221,7 @@ def repair_file(
     temp_req_path: Path,
     context_data: dict,
     root_path: str,
+    docker_time,
     initial_result=None,
     max_retries: int = 2,
     passed_files: list = None,
@@ -269,6 +270,7 @@ def repair_file(
             str(candidate_path),
             temp_req_path,
             repo_root=root_path,
+            timeout=docker_time
         )
 
     while pr.status != VerificationResult.PASS and retry_count < max_retries:
@@ -361,6 +363,7 @@ def repair_file(
             str(candidate_path),
             temp_req_path,
             repo_root=root_path,
+            timeout=docker_time
         )
 
     if pr.status == VerificationResult.PASS:
@@ -406,6 +409,8 @@ def run_for_repo(
     temp_req_path,
     passed_files: list,
     failed_files: list,
+    max_tries: int,
+    dokcer_file_time
 ):
     with open("repo_index.json", "r", encoding="utf-8") as f:
         repo_index = json.load(f)
@@ -678,6 +683,7 @@ def run_for_repo(
             str(candidate_path),
             temp_req_path,
             repo_root=root_path,
+            timeout=dokcer_file_time
         )
 
         context_data = {
@@ -728,8 +734,9 @@ def run_for_repo(
             temp_req_path=temp_req_path,
             context_data=context_data,
             root_path=root_path,
+            docker_time=dokcer_file_time,
             initial_result=pr,
-            max_retries=3,
+            max_retries=max_tries,
             passed_files=passed_files,
             failed_files=failed_files,
         )
