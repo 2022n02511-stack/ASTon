@@ -27,6 +27,15 @@ DEFAULT_CONFIG = {
     },
 }
 
+# Runtime overrides storage (populated by CLI flags before execution)
+_RUNTIME_OVERRIDES = {}
+
+
+def set_runtime_config(overrides: dict):
+    """Set temporary runtime configuration overrides from CLI flags."""
+    global _RUNTIME_OVERRIDES
+    _RUNTIME_OVERRIDES.update(overrides)
+
 
 def get_config_dir() -> Path:
     """Ensure and return the user config directory (~/.config/aston/)."""
@@ -38,9 +47,14 @@ def get_config_dir() -> Path:
 def load_config() -> dict:
     """
     Load configuration from ~/.config/aston/config.yaml,
-    falling back to defaults and applying environment variable overrides.
+    falling back to defaults, applying environment variable overrides,
+    and overlaying runtime CLI overrides.
     """
-    config = DEFAULT_CONFIG.copy()
+    # Create a deep-ish copy of defaults to prevent mutating the global dictionary
+    config = {
+        section: values.copy() if isinstance(values, dict) else values
+        for section, values in DEFAULT_CONFIG.items()
+    }
 
     if CONFIG_FILE.is_file():
         try:
@@ -49,7 +63,7 @@ def load_config() -> dict:
                 if isinstance(user_config, dict):
                     # Deep merge user config into defaults
                     for section, values in user_config.items():
-                        if section in config and isinstance(values, dict):
+                        if section in config and isinstance(values, dict) and isinstance(config[section], dict):
                             config[section].update(values)
                         else:
                             config[section] = values
@@ -59,6 +73,14 @@ def load_config() -> dict:
     # Environment variable overrides
     if os.getenv("ASTON_MODEL"):
         config["llm"]["model"] = os.getenv("ASTON_MODEL")
+
+    # Apply runtime CLI overrides on top
+    if _RUNTIME_OVERRIDES:
+        for section, values in _RUNTIME_OVERRIDES.items():
+            if section in config and isinstance(values, dict) and isinstance(config[section], dict):
+                config[section].update(values)
+            else:
+                config[section] = values
 
     return config
 

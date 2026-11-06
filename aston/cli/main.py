@@ -16,6 +16,8 @@ def main():
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    
+
     # Init command
     subparsers.add_parser(
         "init",
@@ -188,7 +190,7 @@ def main():
             model_name = args.model or llm_config.get("model", "codestral-latest")
             per_file_retries = args.repair_retries if args.repair_retries is not None else mig_config.get("per_file_repair_retries", 3)
             sweep_passes = args.sweep_passes if args.sweep_passes is not None else mig_config.get("failed_files_sweep_passes", 2)
-            file_timeout = args.file_timeout if args.file_timeout is not None else mig_config.get("docker_file_timeout_seconds", 45)
+            file_timeout = args.file_timeout if args.file_timeout is not None else mig_config.get("docker_file_timeout_seconds", 300)
             repo_timeout = args.repo_timeout if args.repo_timeout is not None else mig_config.get("docker_repo_timeout_seconds", 300)
 
             if args.run:
@@ -199,6 +201,12 @@ def main():
                 
                 migrate_repo(
                     path=args.path,
+                    provider=provider_name,
+                    model=model_name,
+                    repair_retries=per_file_retries,
+                    sweep_passes=sweep_passes,
+                    file_timeout=file_timeout,
+                    repo_timeout=repo_timeout,
                 )
             else:
                 info(f"Scanning repository at: {args.path}")

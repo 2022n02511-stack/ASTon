@@ -14,14 +14,6 @@ from aston.cli.console import rich_success, error, warning, info
 from aston.exceptions import ConfigurationError, MigrationError, VerificationError
 from aston.config import load_config
 
-config = load_config()
-mig_cfg = config.get("migration", {})
-
-per_file_retries = mig_cfg.get("per_file_repair_retries", 3)
-sweep_passes = mig_cfg.get("failed_files_sweep_passes", 2)
-docker_file_timeout = mig_cfg.get("docker_file_timeout_seconds", 300)
-docker_repo_timeout = mig_cfg.get("docker_repo_timeout_seconds", 300)
-
 
 def discover_python_files(root: Path) -> list[Path]:
     """Return original project Python files, excluding generated artifacts."""
@@ -171,9 +163,15 @@ def repo_map(repo_path: str) -> dict:
 
 # repo_map('./demo')
 
-def migrate_repo(path: str):
+def migrate_repo(path: str, provider, model, repair_retries, sweep_passes, file_timeout, repo_timeout):
     print_aston_banner()
 
+    per_file_retries = repair_retries
+    sweep_passes = sweep_passes
+    docker_file_timeout = file_timeout
+    docker_repo_timeout = repo_timeout
+    provider_name = provider
+    model_name = model
 
 
     rel_path = Path(path)

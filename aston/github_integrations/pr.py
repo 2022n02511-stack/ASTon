@@ -132,24 +132,21 @@ def get_git_remote_repo(repo_path: Path) -> str | None:
     return None
 
 
-
 def create_migration_pr(
     files_path: str,
     repo_path: str,
     branch_name: str,
     title: str,
     body: str,
+    base_branch: str | None = None,
+    draft: bool = False,
 ) -> str | None:
     """
     Commits selected migration files in an isolated Git worktree,
     pushes them to GitHub, and creates a pull request.
     """
-    # Load configuration settings for base branch and draft status
-    config = load_config()
-    gh_cfg = config.get("github", {})
-
-    target_base = gh_cfg.get("default_base_branch", "main")
-    is_draft = gh_cfg.get("draft_prs", False)
+    target_base = base_branch or "main"
+    is_draft = draft
 
     root = Path(repo_path).expanduser().resolve()
     migration_path = Path(files_path).expanduser().resolve()
