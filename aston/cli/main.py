@@ -7,7 +7,7 @@ from aston.cli.console import rich_success, error, warning, info
 from aston.exceptions import AstonError
 import sys
 from aston.cli.commands import handle_config_show, handle_doctor, handle_init
-from aston.config import load_config
+from aston.config import load_config, set_runtime_config
 
 def main():
     parser = argparse.ArgumentParser(
@@ -180,7 +180,7 @@ def main():
         elif args.command == "check":
             repo_path = Path(args.path).expanduser().resolve()
             
-            # Load user configuration
+            # Load user configuration to resolve defaults for logging/display
             config = load_config()
             mig_config = config.get("migration", {})
             llm_config = config.get("llm", {})
@@ -193,20 +193,29 @@ def main():
             file_timeout = args.file_timeout if args.file_timeout is not None else mig_config.get("docker_file_timeout_seconds", 300)
             repo_timeout = args.repo_timeout if args.repo_timeout is not None else mig_config.get("docker_repo_timeout_seconds", 300)
 
+            # Set runtime overrides so inner pipeline modules pick up CLI flags automatically
+            set_runtime_config({
+                "llm": {
+                    "provider": provider_name,
+                    "model": model_name,
+                },
+                "migration": {
+                    "per_file_repair_retries": per_file_retries,
+                    "failed_files_sweep_passes": sweep_passes,
+                    "docker_file_timeout_seconds": file_timeout,
+                    "docker_repo_timeout_seconds": repo_timeout,
+                }
+            })
+
             if args.run:
                 info("Checking git workspace status...")
                 verify_clean_git_workspace(repo_path)
 
                 info(f"Initiating migration pipeline [Provider: {provider_name}, Model: {model_name}, Per-File Retries: {per_file_retries}]...")
                 
+                # Call migrate_repo safely without signature mismatch errors
                 migrate_repo(
                     path=args.path,
-                    provider=provider_name,
-                    model=model_name,
-                    repair_retries=per_file_retries,
-                    sweep_passes=sweep_passes,
-                    file_timeout=file_timeout,
-                    repo_timeout=repo_timeout,
                 )
             else:
                 info(f"Scanning repository at: {args.path}")
