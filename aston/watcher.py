@@ -36,27 +36,28 @@ def watcher(path: str) -> dict:
             continue
 
         # Extract package name and check if it's an exact version pin vs range/constraint
-        match = re.match(r"^([a-zA-Z0-9\-_]+)", line)
+        # Extract package name and version constraints dynamically
+        match = re.match(r"^([a-zA-Z0-9\-_]+)(.*?)$", line)
         if match:
             pkg_name = match.group(1)
             pkg_key = pkg_name.lower()
             
-            # Check for exact version pin (e.g., openai==0.28.1)
-            exact_match = re.match(r"^[a-zA-Z0-9\-_]+\s*==\s*([0-9\.]+)$", line)
-            exact_version = exact_match.group(1) if exact_match else None
+            # Extract any version numbers found in the line (e.g., from '==1.2.3' or '>=1.0.0')
+            version_match = re.search(r"([0-9]+\.[0-9]+(?:\.[0-9]+)?)", line)
+            parsed_version = version_match.group(1) if version_match else None
 
-            target_version = get_latest_pypi_version(pkg_key)
+            target_version = get_latest_pypi_version(pkg_key) or parsed_version
 
             dependencies[pkg_key] = {
                 "declared": {
                     "specifier": line,
-                    "version": exact_version,  # Null if it's a constraint range like 2.31,<3
+                    "version": parsed_version,  # Falls back to extracted version instead of strict ==
                     "source_file": req_file.name,
                     "source_type": "requirements"
                 },
                 "resolved": None,
                 "installed": None,
-                "target_version": target_version if target_version else exact_version,
+                "target_version": target_version,
                 "provenance_status": "declared"
             }
 

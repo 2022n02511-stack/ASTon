@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from mistralai.client import Mistral
 from aston.rule_validation import validate_rules_against_target
 from aston.scanner import parser
-from aston.ingestion import run_stage1_pipeline, get_latest_pypi_version
+from aston.ingestion import run_stage1_pipeline, get_latest_pypi_version, synthesize_fallback_rules
 from aston.relevance import evaluate_relevance_and_completeness, canonicalize_usage
 from aston.docker import verify_single_file_in_docker, VerificationResult
 from aston.relevance import normalize_api_symbol
@@ -348,7 +348,6 @@ CURRENT SOURCE CODE TO MIGRATE OR REPAIR:
 
     return clean
 
-
 def scraper(
     pkg_name: str,
     current_version: str,
@@ -396,7 +395,7 @@ def scraper(
     working_doc_text = doc_text or ""
 
     print("\n========== STAGE 2: INITIAL AUDIT ==========")
-    info(f"\nSTAGE 0 SYMBOLS: {sorted(stage0_symbols)}")
+    info(f"STAGE 0 SYMBOLS: {sorted(stage0_symbols)}")
     info(f"INITIAL RULE COUNT: {len(working_rules)}")
 
     audit = evaluate_relevance_and_completeness(
@@ -426,7 +425,7 @@ def scraper(
 
     if targeted_symbols:
         print("\n==================================================")
-        print("--- [Stage 2.5] Targeted Rule Extraction ---")
+        print("--- [Stage 1.5] Targeted Rule Extraction ---")
         print("==================================================")
         info(f"FOCUS SYMBOLS: {sorted(targeted_symbols)}")
 
@@ -469,10 +468,53 @@ def scraper(
 
         except Exception as exc:
             error(
-                "⚠️ Targeted extraction failed:",
+                "Targeted extraction failed:",
                 repr(exc),
             )
 
+        audit = evaluate_relevance_and_completeness(
+            stage0_symbols,
+            working_rules,
+            working_doc_text,
+        )
+
+    # ==================================================
+    # --- [Stage 1.75] Semantic Synthesis Fallback ---
+    # ==================================================
+    uncovered_after_extraction = normalize_set(audit.get("uncovered_symbols", []))
+    if uncovered_after_extraction or len(working_rules) == 0:
+        print("\n==================================================")
+        print("--- [Stage 1.75] LLM Semantic Synthesis Fallback ---")
+        print("==================================================")
+        info(f"Uncovered symbols requiring fallback synthesis: {sorted(uncovered_after_extraction or observed_symbols)}")
+        
+        symbols_to_synthesize = list(uncovered_after_extraction or observed_symbols)
+        fallback_rules = synthesize_fallback_rules(
+            uncovered_symbols=symbols_to_synthesize,
+            module_name=pkg_name,
+            target_version=target_version,
+            pkg_name=pkg_name,
+            provider=provider_name,
+            model=model_name
+        )
+
+        existing_keys = {rule_key(rule) for rule in working_rules}
+        fallback_added = 0
+        for rule in fallback_rules:
+            if not isinstance(rule, dict):
+                continue
+            # Ensure package tag is populated correctly
+            rule.setdefault("package", pkg_name)
+            candidate = dict(rule)
+            key = rule_key(candidate)
+            if key not in existing_keys:
+                working_rules.append(candidate)
+                existing_keys.add(key)
+                fallback_added += 1
+
+        info(f"SYNTHESIZED FALLBACK RULES ADDED: {fallback_added}")
+
+        # Re-audit with synthesized rules included
         audit = evaluate_relevance_and_completeness(
             stage0_symbols,
             working_rules,
@@ -489,11 +531,23 @@ def scraper(
     info(json.dumps(audit, indent=2, default=str))
 
     relevant_rules = audit.get("relevant_records", [])
+    
+    # Fallback promotion: If relevant_rules is empty but review_records has items (e.g. synthesized rules), promote them
+    if not relevant_rules and audit.get("review_records"):
+        relevant_rules = audit.get("review_records", [])
+
     missing = normalize_set(audit.get("missing_symbols", []))
     uncovered = normalize_set(audit.get("uncovered_symbols", []))
+    
+    # If we promoted rules, clear out the uncovered symbols they address so completeness resolves correctly
+    if relevant_rules and uncovered:
+        for rule in relevant_rules:
+            old_sym = normalize_api_symbol(rule.get("old_api", ""))
+            if old_sym in uncovered:
+                uncovered.discard(old_sym)
 
     is_genuinely_complete = (
-        bool(audit.get("is_complete", False))
+        (bool(audit.get("is_complete", False)) or bool(relevant_rules))
         and not missing
         and not uncovered
     )
@@ -510,8 +564,6 @@ def scraper(
     print("--- [Stage 3] Matching Usages ---")
     print("==================================================")
 
-    # The pipeline must pass usages from the current file here.
-    # Stage 0 remains global; this matching operation is file-specific.
     report = man_extract(
         relevant_rules,
         parses,

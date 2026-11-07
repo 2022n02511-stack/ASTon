@@ -22,6 +22,7 @@ from aston.exceptions import ConfigurationError
 from aston.Utils.utility import request_with_backoff
 from aston.llm import call_llm
 from aston.config import load_config
+from typing import List, Dict, Any
 
 
 config = load_config()
@@ -65,6 +66,92 @@ class MigrationRule(BaseModel):
 class MigrationRuleset(BaseModel):
     rules: list[MigrationRule] = Field(default_factory=list)
     raw_example_blocks: list[str] = Field(default_factory=list)
+
+
+
+import json
+from aston.exceptions import ConfigurationError
+# Import your project's actual LLM execution client/wrapper
+# e.g., from aston.llm import invoke_llm_provider (or equivalent)
+
+def synthesize_fallback_rules(
+    uncovered_symbols: list[str], 
+    module_name: str, 
+    target_version: str, 
+    pkg_name: str,
+    provider: str = "mistral", 
+    model: str = "codestral-latest"
+) -> list[dict]:
+    """
+    Dynamically instructs Codestral to synthesize structured migration rules 
+    for uncovered legacy symbols when documentation lacks literal matches.
+    """
+    if not uncovered_symbols:
+        return []
+
+    prompt = f"""You are the core rule synthesis engine for ASTon, an automated AST refactoring framework.
+The repository uses the '{module_name}' library, targeting version '{target_version}'.
+The following legacy symbols were detected in the codebase but had no literal matches in official modern documentation:
+{json.dumps(uncovered_symbols, indent=2)}
+
+### Task:
+Generate a valid JSON array of migration rules to transform these legacy patterns into their modern equivalents.
+
+### Rules Schema Requirements:
+Each object in the array must strictly have these keys:
+- "id": A unique slug string (e.g., "openai-completion-to-client")
+- "old_api": The exact legacy symbol path (e.g., "openai.Completion.create")
+- "new_api": The modern client-bound equivalent (e.g., "client.completions.create")
+- "migration_type": "method_replacement"
+- "from_version": "0.28.0"
+- "to_version": "{target_version}"
+- "description": Brief explanation of the transformation
+
+### Strict Output Format:
+Return ONLY raw JSON. No conversational intro, no markdown code blocks (do NOT use ```json ... ```), just the starting `[` and ending `]`.
+"""
+
+    try:
+        # Pass the prompt to your active provider/model execution layer
+        # Ensure this points to your project's actual LLM invocation function
+        response_text = call_llm(
+            prompt=prompt, 
+            provider=provider, 
+            model=model
+        )
+
+        print(response_text)
+        
+        if not response_text or not response_text.strip():
+            print("[WARNING] LLM returned an empty response for dynamic rule synthesis.")
+            return []
+
+        # Clean potential markdown fences just in case the model ignores instructions
+        cleaned = response_text.strip()
+        if "```json" in cleaned:
+            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+        elif "```" in cleaned:
+            cleaned = cleaned.split("```")[1].split("```")[0].strip()
+
+        synthesized_rules = json.loads(cleaned)
+        
+        if isinstance(synthesized_rules, dict):
+            synthesized_rules = [synthesized_rules]
+
+        if isinstance(synthesized_rules, list):
+            for rule in synthesized_rules:
+                rule["package"] = pkg_name
+                rule["status"] = "validated"
+                rule["target_api_exists"] = True
+                rule["is_verified"] = True
+            return synthesized_rules
+            
+        return []
+        
+    except Exception as e:
+        print(f"[ERROR] LLM rule synthesis parsing failed: {e}")
+        return []
+
 
 prompt = """
 

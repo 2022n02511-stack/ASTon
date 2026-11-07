@@ -200,14 +200,17 @@ def migrate_repo(path: str):
                 target_version, 
                 repo_index["symbols"]
             )
-            # info("composed_rules: ", composed_rules)
+            info(f"composed_rules: {composed_rules}")
             # print(raw_code_examples)
+            # print(doc_text)
             
             migrations[module] = {
                 'composed_rules': composed_rules,
                 'doc_text': doc_text,
                 'raw_code_examples': raw_code_examples
             }
+
+            print(migrations)
 
     with open('migrations.json', 'w', encoding='utf-8') as f:
         json.dump(migrations, f, indent=3)
