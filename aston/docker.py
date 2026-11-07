@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+import queue
+import threading
 
 
 class VerificationResult(str, Enum):
@@ -34,6 +36,91 @@ class VerificationOutput:
     @property
     def stdout(self) -> str:
         return self.raw_stdout
+
+
+def _run_streaming_build(
+    command: list[str],
+    timeout: int,
+) -> tuple[int, str, str, bool]:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    events = queue.Queue()
+    outputs = {"stdout": [], "stderr": []}
+
+    def read_stream(name, stream):
+        try:
+            for line in iter(stream.readline, ""):
+                events.put((name, line))
+        finally:
+            stream.close()
+            events.put((name, None))
+
+    threads = [
+        threading.Thread(
+            target=read_stream,
+            args=("stdout", process.stdout),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=read_stream,
+            args=("stderr", process.stderr),
+            daemon=True,
+        ),
+    ]
+
+    for thread in threads:
+        thread.start()
+
+    deadline = time.monotonic() + timeout
+    finished_streams = 0
+    timed_out = False
+
+    while finished_streams < 2:
+        remaining = deadline - time.monotonic()
+
+        if remaining <= 0 and process.poll() is None and not timed_out:
+            timed_out = True
+
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            except ProcessLookupError:
+                pass
+
+        try:
+            name, line = events.get(
+                timeout=0.1 if timed_out else max(0.01, remaining)
+            )
+        except queue.Empty:
+            continue
+
+        if line is None:
+            finished_streams += 1
+            continue
+
+        outputs[name].append(line)
+
+        # Display progress immediately.
+        print(line, end="", flush=True)
+
+    for thread in threads:
+        thread.join()
+
+    return (
+        process.returncode,
+        "".join(outputs["stdout"]),
+        "".join(outputs["stderr"]),
+        timed_out,
+    )    
 
 
 def _ignore_repo_files(directory: str, names: list[str]) -> set[str]:
@@ -83,6 +170,7 @@ def _classify_runtime_failure(stderr: str) -> tuple[VerificationResult, str]:
         return VerificationResult.MIGRATION_ERROR, "AssertionError"
 
     return VerificationResult.MIGRATION_ERROR, "RuntimeError"
+
 
 
 def verify_single_file_in_docker(
@@ -276,6 +364,7 @@ except BaseException:
         (context / "run_target.py").write_text(runner, encoding="utf-8")
 
         dockerfile = f"""
+# syntax=docker/dockerfile:1.7
 FROM {python_image}
 WORKDIR /app
 
@@ -284,7 +373,13 @@ ENV PYTHONUNBUFFERED=1
 ENV OPENAI_API_KEY=sk-test-aston-verification
 
 COPY requirements.txt /app/requirements.txt
-RUN python -m pip install --no-cache-dir --default-timeout=120 --retries 3 -r /app/requirements.txt
+
+RUN --mount=type=cache,id=aston-pip-cache,target=/root/.cache/pip \
+    python -m pip install \
+    --cache-dir=/root/.cache/pip \
+    --default-timeout=120 \
+    --retries 3 \
+    -r /app/requirements.txt
 
 COPY repo/ /app/repo/
 COPY run_target.py /app/run_target.py
@@ -298,43 +393,65 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
         image_tag = f"aston-verify-{uuid.uuid4().hex[:12]}"
 
         try:
-            build = subprocess.run(
-                [
-                    docker,
-                    "build",
-                    "--tag",
-                    image_tag,
-                    "--file",
-                    str(context / "Dockerfile"),
-                    str(context),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=build_timeout,
-                check=False,
+            returncode, build_stdout, build_stderr, build_timed_out = (
+                _run_streaming_build(
+                    [
+                        docker,
+                        "build",
+                        "--progress=plain",
+                        "--tag",
+                        image_tag,
+                        "--file",
+                        str(context / "Dockerfile"),
+                        str(context),
+                    ],
+                    timeout=build_timeout,
+                )
             )
-        except subprocess.TimeoutExpired as exc:
+
+        except OSError as exc:
+            return VerificationOutput(
+                status=VerificationResult.ENVIRONMENT_ERROR,
+                target_file=str(target_abs),
+                error_type="DockerBuildError",
+                error_message=str(exc),
+            )
+
+        if build_timed_out:
+            # Best-effort cleanup. A Docker CLI timeout does not guarantee
+            # that every daemon-side BuildKit operation has stopped.
+            try:
+                subprocess.run(
+                    [docker, "image", "rm", "-f", image_tag],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
             return VerificationOutput(
                 status=VerificationResult.TIMEOUT,
                 target_file=str(target_abs),
                 error_type="DockerBuildTimeout",
                 error_message=f"Docker image build exceeded {build_timeout} seconds.",
-                raw_stdout=exc.stdout or "",
-                raw_stderr=exc.stderr or "",
+                raw_stdout=build_stdout,
+                raw_stderr=build_stderr,
             )
 
-        if build.returncode != 0:
+        if returncode != 0:
             return VerificationOutput(
                 status=VerificationResult.ENVIRONMENT_ERROR,
                 target_file=str(target_abs),
                 error_type="DockerBuildError",
                 error_message=(
-                    build.stderr.strip()
-                    or build.stdout.strip()
+                    build_stderr.strip()
+                    or build_stdout.strip()
                     or "Docker image build failed."
                 ),
-                raw_stderr=build.stderr,
-                raw_stdout=build.stdout,
+                raw_stderr=build_stderr,
+                raw_stdout=build_stdout,
             )
 
         try:
@@ -362,7 +479,7 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
                 raw_stderr=exc.stderr or "",
             )
         finally:
-        # Cleanup must never override the verification result.
+            # Cleanup must never override the verification result.
             try:
                 subprocess.run(
                     [docker, "image", "rm", "-f", image_tag],

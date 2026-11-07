@@ -25,20 +25,15 @@ from aston.config import load_config
 from typing import List, Dict, Any
 
 
-config = load_config()
 
-llm_cfg = config.get("llm", {})
-provider_name = llm_cfg.get("provider", "mistral")
-model_name = llm_cfg.get("model", "codestral-latest")
-temperature = llm_cfg.get("temperature", 0.0)
 # max_retries = llm_cfg.get("max_retries", 3)
 
 
 load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-API_KEY = os.getenv("MISTRAL_API_KEY")
-client = Mistral(api_key=API_KEY) if API_KEY else None
+# API_KEY = os.getenv("MISTRAL_API_KEY")
+# client = Mistral(api_key=API_KEY) if API_KEY else None
 
 GITHUB_API = "https://api.github.com"
 REQUEST_TIMEOUT = 20
@@ -365,14 +360,22 @@ def validate_and_normalize_rules(
     source_evidence: str = "",
 ) -> list[dict]:
     """Validate candidates; retain uncertain candidates with needs_review."""
+
+    config = load_config()
+
+    llm_cfg = config.get("llm", {})
+    provider_name = llm_cfg.get("provider", "mistral")
+    model_name = llm_cfg.get("model", "codestral-latest")
+    temperature = llm_cfg.get("temperature", 0.0)
+
     if not rules:
         warning("Rule validation skipped: no extracted rules.")
         return []
-    if not client:
-        raise ConfigurationError(
-            message="MISTRAL_API_KEY environment variable is missing or invalid.",
-            details="Set your MISTRAL_API_KEY in your environment or .env file before running rule validation."
-        )
+    # if not client:
+    #     raise ConfigurationError(
+    #         message="MISTRAL_API_KEY environment variable is missing or invalid.",
+    #         details="Set your MISTRAL_API_KEY in your environment or .env file before running rule validation."
+    #     )
     def preserve_for_review(source_rules: list[dict], reason: str) -> list[dict]:
         preserved = []
         for source_rule in source_rules:
@@ -785,11 +788,20 @@ def extract_rules(
     focus_symbols: set[str] | None = None,
 ) -> MigrationRuleset:
     """Extract evidence-grounded rules across the full document in focused chunks."""
-    if not client:
-        raise ConfigurationError(
-            message="MISTRAL_API_KEY environment variable is missing or invalid.",
-            details="Set your MISTRAL_API_KEY in your environment or .env file before running rule extraction."
-        )
+    # if not client:
+    #     raise ConfigurationError(
+    #         message="MISTRAL_API_KEY environment variable is missing or invalid.",
+    #         details="Set your MISTRAL_API_KEY in your environment or .env file before running rule extraction."
+    #     )
+
+
+    config = load_config()
+
+    llm_cfg = config.get("llm", {})
+    provider_name = llm_cfg.get("provider", "mistral")
+    model_name = llm_cfg.get("model", "codestral-latest")
+    temperature = llm_cfg.get("temperature", 0.0)
+
     if not doc_text or len(doc_text.strip()) < 30:
         return MigrationRuleset()
     focus_symbols = {

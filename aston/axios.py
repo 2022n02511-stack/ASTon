@@ -16,17 +16,10 @@ import time
 from aston.llm import call_llm
 from aston.config import load_config
 
-load_dotenv()
-config = load_config()
 
-llm_cfg = config.get("llm", {})
-provider_name = llm_cfg.get("provider", "mistral")
-model_name = llm_cfg.get("model", "codestral-latest")
-temperature = llm_cfg.get("temperature", 0.0)
-max_retries = llm_cfg.get("max_retries", 3)
 
-API_KEY = os.environ.get("MISTRAL_API_KEY")
-client = Mistral(api_key=API_KEY) if API_KEY else None
+# API_KEY = os.environ.get("MISTRAL_API_KEY")
+# client = Mistral(api_key=API_KEY) if API_KEY else None
 
 with open("patcher_prompt.txt", "r", encoding="utf-8") as f:
     prompt = f.read()
@@ -201,11 +194,20 @@ def code_patcher(
 ):
     """Stage 3 migration and Stage 5 verification-guided repair."""
 
-    if not client:
-        raise ConfigurationError(
-            message="MISTRAL_API_KEY environment variable is missing or invalid.",
-            details="Set your MISTRAL_API_KEY in your environment or .env file before running code patching."
-        )
+    # if not client:
+    #     raise ConfigurationError(
+    #         message="MISTRAL_API_KEY environment variable is missing or invalid.",
+    #         details="Set your MISTRAL_API_KEY in your environment or .env file before running code patching."
+    #     )
+
+
+    config = load_config()
+
+    llm_cfg = config.get("llm", {})
+    provider_name = llm_cfg.get("provider", "mistral")
+    model_name = llm_cfg.get("model", "codestral-latest")
+    temperature = llm_cfg.get("temperature", 0.0)
+    max_retries = llm_cfg.get("max_retries", 3)
 
     # CHANGE: Require rules and matches for a normal migration, but don't
     # block repair mode. A verifier error can still need repair even when
@@ -362,6 +364,13 @@ def scraper(
     print("\n==================================================")
     print("--- [Stage 1] Multi-Boundary Chain Ingestion ---")
     print("==================================================")
+
+    config = load_config()
+
+    llm_cfg = config.get("llm", {})
+    provider_name = llm_cfg.get("provider", "mistral")
+    model_name = llm_cfg.get("model", "codestral-latest")
+
 
     def normalize_set(values) -> set[str]:
         if not values:

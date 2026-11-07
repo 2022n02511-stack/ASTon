@@ -1,15 +1,17 @@
 [
   {
-    "id": "openai-completion-to-client",
+    "package": "openai",
     "old_api": "openai.Completion.create",
     "new_api": "client.completions.create",
-    "migration_type": "method_replacement",
-    "from_version": "0.28.0",
-    "to_version": "3.46.0",
-    "description": "Replaced the legacy Completion.create method with the modern client.completions.create method in the OpenAI Python library",
-    "package": "openai",
-    "status": "validated",
-    "target_api_exists": true,
-    "is_verified": true
+    "requires_instantiation": true,
+    "migration_type": "client_migration",
+    "description": "Migrated from static Completion.create method to client instance method.",
+    "from_version": "0.28.1",
+    "to_version": "v1.0.0",
+    "example_before": "completion = openai.Completion.create(model='curie')",
+    "example_after": "completion = client.completions.create(model='curie')",
+    "evidence": "- openai.Completion.create() -> client.completions.create()",
+    "source_url": "https://github.com/openai/openai-python/discussions/742",
+    "validation_status": "validated"
   }
 ]

@@ -1,0 +1,32 @@
+{
+   "rules": [
+      {
+         "package": "openai",
+         "old_api": "openai.Completion.create",
+         "new_api": "client.completions.create",
+         "requires_instantiation": true,
+         "migration_type": "client_migration",
+         "description": "Migrated from static Completion.create method to client instance method.",
+         "from_version": "0.28.1",
+         "to_version": "v1.0.0",
+         "example_before": "completion = openai.Completion.create(model='curie')",
+         "example_after": "completion = client.completions.create(model='curie')",
+         "evidence": "- openai.Completion.create() -> client.completions.create()",
+         "source_url": "https://github.com/openai/openai-python/discussions/742",
+         "validation_status": "unverifiable",
+         "evidence_status": "unknown",
+         "chain_status": "unresolved",
+         "verification_status": "not_run",
+         "documentation_validation_status": "validated",
+         "target_api_status": "probe_failed",
+         "candidate_new_api": "client.completions.create",
+         "resolution_reason": "Docker validation failed: python: can't open file '/work/validate.py': [Errno 13] Permission denied\n"
+      }
+   ],
+   "total_rules": 1,
+   "target_api_exists": 0,
+   "target_api_missing": 0,
+   "unverifiable_rules": 1,
+   "not_probed_rules": 0,
+   "documentation_validated_rules": 1
+}

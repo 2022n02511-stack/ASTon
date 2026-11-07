@@ -1,6 +1,7 @@
 import os
 from abc import ABC, abstractmethod
 from aston.exceptions import LLMError
+from aston.config import load_config # assuming runtime config getter exists or load_config reads it
 
 class BaseLLMProvider(ABC):
     @abstractmethod
@@ -141,7 +142,6 @@ class GoogleProvider(BaseLLMProvider):
                 config=types.GenerateContentConfig(**config_kwargs)
             )
             
-            # If response_format is used and parsed object is available, return it directly
             if response_format and hasattr(response, "parsed") and response.parsed is not None:
                 return response.parsed
                 
@@ -163,24 +163,32 @@ _PROVIDERS = {
 
 def call_llm(
     prompt: str, 
-    provider: str = "mistral", 
-    model: str = "codestral-latest", 
+    provider: str = None, 
+    model: str = None, 
     temperature: float = 0.0, 
     system_prompt: str = None,
     response_format=None
 ) -> str | object:
-    provider_lower = provider.lower()
+    # Always load configuration to check for runtime or file-based overrides
+    config = load_config()
+    llm_cfg = config.get("llm", {})
+
+    # Priority: Function argument -> Runtime/File config -> Hardcoded fallback defaults
+    resolved_provider = provider or llm_cfg.get("provider", "mistral")
+    resolved_model = model or llm_cfg.get("model", "codestral-latest")
+
+    provider_lower = resolved_provider.lower()
     if provider_lower not in _PROVIDERS:
         supported = list(_PROVIDERS.keys())
         raise LLMError(
-            message=f"Unsupported LLM provider: '{provider}'",
-            details=f"Requested Provider: {provider} | Supported Providers: {supported}"
+            message=f"Unsupported LLM provider: '{resolved_provider}'",
+            details=f"Requested Provider: {resolved_provider} | Supported Providers: {supported}"
         )
     
     provider_instance = _PROVIDERS[provider_lower]()
     return provider_instance.generate(
         prompt=prompt, 
-        model=model, 
+        model=resolved_model, 
         temperature=temperature, 
         system_prompt=system_prompt,
         response_format=response_format
