@@ -6,16 +6,28 @@
       "index_status": "complete"
    },
    "dependencies": {
-      "streamlit": {
+      "folium": {
          "declared": {
-            "specifier": "streamlit",
+            "specifier": "folium",
             "version": null,
             "source_file": "requirements.txt",
             "source_type": "requirements"
          },
          "resolved": null,
          "installed": null,
-         "target_version": "1.67.0",
+         "target_version": "0.20.0",
+         "provenance_status": "declared"
+      },
+      "openai": {
+         "declared": {
+            "specifier": "openai==0.28.1",
+            "version": "0.28.1",
+            "source_file": "requirements.txt",
+            "source_type": "requirements"
+         },
+         "resolved": null,
+         "installed": null,
+         "target_version": "3.46.0",
          "provenance_status": "declared"
       },
       "requests": {
@@ -30,6 +42,30 @@
          "target_version": "2.34.2",
          "provenance_status": "declared"
       },
+      "streamlit": {
+         "declared": {
+            "specifier": "streamlit",
+            "version": null,
+            "source_file": "requirements.txt",
+            "source_type": "requirements"
+         },
+         "resolved": null,
+         "installed": null,
+         "target_version": "1.67.0",
+         "provenance_status": "declared"
+      },
+      "tiktoken": {
+         "declared": {
+            "specifier": "tiktoken",
+            "version": null,
+            "source_file": "requirements.txt",
+            "source_type": "requirements"
+         },
+         "resolved": null,
+         "installed": null,
+         "target_version": "0.14.0",
+         "provenance_status": "declared"
+      },
       "streamlit-folium": {
          "declared": {
             "specifier": "streamlit-folium",
@@ -40,18 +76,6 @@
          "resolved": null,
          "installed": null,
          "target_version": "0.27.4",
-         "provenance_status": "declared"
-      },
-      "openai": {
-         "declared": {
-            "specifier": "openai==0.28.1",
-            "version": "0.28.1",
-            "source_file": "requirements.txt",
-            "source_type": "requirements"
-         },
-         "resolved": null,
-         "installed": null,
-         "target_version": "3.46.0",
          "provenance_status": "declared"
       }
    },

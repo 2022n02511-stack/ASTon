@@ -14,7 +14,7 @@ from aston.rule_validation import (
     validate_all_rules,
     reconcile_report,
 )
-from aston.artifacts.save_attempt import save_code
+from aston.artifacts.save_attempt import save_code, _save_verification_result
 from aston.cli_ui.rich import (
     print_rich_aston_banner,
     run_with_animation,
@@ -250,9 +250,21 @@ def repair_file(
     relationships = context_data["relationships"]
     dependencies = context_data["dependencies"]
 
-    candidate_path = Path(path)
-    original_path = Path(context_data.get("original_path", path))
+    candidate_path = Path(
+        context_data.get("candidate_path", path)
+    )
+
+    original_path = Path(
+        context_data.get("original_path", path)
+    )
     display_path = context_data.get("display_path", str(original_path))
+
+    print("\n[ASTON DEBUG] REPAIR FUNCTION")
+    print(f"[ASTON DEBUG] Received path: {path!r}")
+    print(f"[ASTON DEBUG] Candidate path: {candidate_path.resolve()}")
+    print(f"[ASTON DEBUG] Candidate exists: {candidate_path.is_file()}")
+    print(f"[ASTON DEBUG] Original path: {original_path}")
+    print("[ASTON DEBUG] END REPAIR FUNCTION\n")
 
     rep_con = context_data.get("repair_instructions")
 
@@ -264,6 +276,9 @@ def repair_file(
 
     # Reuse the initial result instead of verifying the same candidate twice.
     pr = initial_result
+
+    if pr is not None:
+        _save_verification_result(file_run_dir, "initial", pr)
 
     if pr is None:
         pr = verify_single_file_in_docker(
@@ -364,6 +379,12 @@ def repair_file(
             temp_req_path,
             repo_root=root_path,
             timeout=docker_time
+        )
+
+        _save_verification_result(
+            file_run_dir,
+            f"repair_{retry_count}",
+            pr,
         )
 
     if pr.status == VerificationResult.PASS:
@@ -686,9 +707,12 @@ def run_for_repo(
             timeout=docker_file_time
         )
 
+        _save_verification_result(file_run_dir, "initial", pr)
+
         context_data = {
             "file_run_dir": file_run_dir,
             "all_reports": all_reports,
+            "candidate_path": str(candidate_path),
             "validated_all_rules_dict": validated_all_rules_dict,
             "all_tar_vers": all_tar_vers,
             "all_cur_vers": all_cur_vers,
@@ -728,6 +752,12 @@ def run_for_repo(
             f"\nInitial verification failed for {path}. "
             "Starting repair loop..."
         )
+
+        print("\n[ASTON DEBUG] BEFORE REPAIR CALL")
+        print(f"[ASTON DEBUG] path: {path!r}")
+        print(f"[ASTON DEBUG] candidate_path: {candidate_path}")
+        print(f"[ASTON DEBUG] candidate exists: {candidate_path.is_file()}")
+        print("[ASTON DEBUG] END BEFORE REPAIR CALL\n")
 
         success = repair_file(
             path=str(candidate_path),

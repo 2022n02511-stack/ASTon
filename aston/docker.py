@@ -115,12 +115,14 @@ def _run_streaming_build(
     for thread in threads:
         thread.join()
 
+    returncode = process.wait()
+
     return (
-        process.returncode,
+        returncode,
         "".join(outputs["stdout"]),
         "".join(outputs["stderr"]),
         timed_out,
-    )    
+    ) 
 
 
 def _ignore_repo_files(directory: str, names: list[str]) -> set[str]:
@@ -303,40 +305,43 @@ def verify_single_file_in_docker(
 
     # Unique temporary context prevents concurrent verifier runs from
     # overwriting each other's Dockerfiles or runner scripts.
-    with tempfile.TemporaryDirectory(prefix="aston_verify_") as temp_dir:
-        context = Path(temp_dir)
-        repo_copy = context / "repo"
-        repo_copy.mkdir()
+    temp_dir = tempfile.mkdtemp(prefix="aston_verify_")
+    context = Path(temp_dir)
 
-        try:
-            shutil.copytree(
-                root,
-                repo_copy,
-                dirs_exist_ok=True,
-                ignore=_ignore_repo_files,
-            )
-        except OSError as exc:
-            return VerificationOutput(
-                status=VerificationResult.ENVIRONMENT_ERROR,
-                target_file=str(target_abs),
-                error_type="RepositoryCopyError",
-                error_message=str(exc),
-            )
+    print(f"\n[ASTON DEBUG] Preserved Docker context: {context}")
 
-        copied_target = repo_copy / target_rel
-        if not copied_target.is_file():
-            return VerificationOutput(
-                status=VerificationResult.ENVIRONMENT_ERROR,
-                target_file=str(target_abs),
-                error_type="TargetCopyError",
-                error_message=f"Target file was not copied into Docker context: {target_rel}",
-            )
+    repo_copy = context / "repo"
+    repo_copy.mkdir()
 
-        # Use the supplied target-version requirements, not the repository's
-        # original requirements file.
-        shutil.copy2(requirements_input, context / "requirements.txt")
+    try:
+        shutil.copytree(
+            root,
+            repo_copy,
+            dirs_exist_ok=True,
+            ignore=_ignore_repo_files,
+        )
+    except OSError as exc:
+        return VerificationOutput(
+            status=VerificationResult.ENVIRONMENT_ERROR,
+            target_file=str(target_abs),
+            error_type="RepositoryCopyError",
+            error_message=str(exc),
+        )
 
-        runner = r'''
+    copied_target = repo_copy / target_rel
+    if not copied_target.is_file():
+        return VerificationOutput(
+            status=VerificationResult.ENVIRONMENT_ERROR,
+            target_file=str(target_abs),
+            error_type="TargetCopyError",
+            error_message=f"Target file was not copied into Docker context: {target_rel}",
+        )
+
+    # Use the supplied target-version requirements, not the repository's
+    # original requirements file.
+    shutil.copy2(requirements_input, context / "requirements.txt")
+
+    runner = r'''
 import runpy
 import sys
 import traceback
@@ -361,9 +366,9 @@ except BaseException:
     traceback.print_exc()
     raise
 '''
-        (context / "run_target.py").write_text(runner, encoding="utf-8")
+    (context / "run_target.py").write_text(runner, encoding="utf-8")
 
-        dockerfile = f"""
+    dockerfile = f"""
 # syntax=docker/dockerfile:1.7
 FROM {python_image}
 WORKDIR /app
@@ -386,134 +391,140 @@ COPY run_target.py /app/run_target.py
 
 CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
 """
-        (context / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+    (context / "Dockerfile").write_text(dockerfile, encoding="utf-8")
 
         # Unique image tag prevents concurrent invocations from sharing a tag.
-        import uuid
-        image_tag = f"aston-verify-{uuid.uuid4().hex[:12]}"
+    import uuid
+    image_tag = f"aston-verify-{uuid.uuid4().hex[:12]}"
 
-        try:
-            returncode, build_stdout, build_stderr, build_timed_out = (
-                _run_streaming_build(
-                    [
-                        docker,
-                        "build",
-                        "--progress=plain",
-                        "--tag",
-                        image_tag,
-                        "--file",
-                        str(context / "Dockerfile"),
-                        str(context),
-                    ],
-                    timeout=build_timeout,
-                )
-            )
-
-        except OSError as exc:
-            return VerificationOutput(
-                status=VerificationResult.ENVIRONMENT_ERROR,
-                target_file=str(target_abs),
-                error_type="DockerBuildError",
-                error_message=str(exc),
-            )
-
-        if build_timed_out:
-            # Best-effort cleanup. A Docker CLI timeout does not guarantee
-            # that every daemon-side BuildKit operation has stopped.
-            try:
-                subprocess.run(
-                    [docker, "image", "rm", "-f", image_tag],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                )
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-
-            return VerificationOutput(
-                status=VerificationResult.TIMEOUT,
-                target_file=str(target_abs),
-                error_type="DockerBuildTimeout",
-                error_message=f"Docker image build exceeded {build_timeout} seconds.",
-                raw_stdout=build_stdout,
-                raw_stderr=build_stderr,
-            )
-
-        if returncode != 0:
-            return VerificationOutput(
-                status=VerificationResult.ENVIRONMENT_ERROR,
-                target_file=str(target_abs),
-                error_type="DockerBuildError",
-                error_message=(
-                    build_stderr.strip()
-                    or build_stdout.strip()
-                    or "Docker image build failed."
-                ),
-                raw_stderr=build_stderr,
-                raw_stdout=build_stdout,
-            )
-
-        try:
-            run = subprocess.run(
+    try:
+        returncode, build_stdout, build_stderr, build_timed_out = (
+            _run_streaming_build(
                 [
                     docker,
-                    "run",
-                    "--rm",
-                    "--network",
-                    "none",
+                    "build",
+                    "--progress=plain",
+                    "--tag",
                     image_tag,
+                    "--file",
+                    str(context / "Dockerfile"),
+                    str(context),
                 ],
+                timeout=build_timeout,
+            )
+        )
+
+        print(f"\n[ASTON DEBUG] Docker build return code: {returncode}")
+        print(f"[ASTON DEBUG] Docker build timed out: {build_timed_out}")
+        print(f"[ASTON DEBUG] Docker build stdout length: {len(build_stdout)}")
+        print(f"[ASTON DEBUG] Docker build stderr length: {len(build_stderr)}")
+        print(f"[ASTON DEBUG] Preserved Docker context: {context}")
+
+    except OSError as exc:
+        return VerificationOutput(
+            status=VerificationResult.ENVIRONMENT_ERROR,
+            target_file=str(target_abs),
+            error_type="DockerBuildError",
+            error_message=str(exc),
+        )
+
+    if build_timed_out:
+        # Best-effort cleanup. A Docker CLI timeout does not guarantee
+        # that every daemon-side BuildKit operation has stopped.
+        try:
+            subprocess.run(
+                [docker, "image", "rm", "-f", image_tag],
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=30,
                 check=False,
             )
-        except subprocess.TimeoutExpired as exc:
-            return VerificationOutput(
-                status=VerificationResult.TIMEOUT,
-                target_file=str(target_abs),
-                error_type="ExecutionTimeout",
-                error_message=f"Target execution exceeded {timeout} seconds.",
-                raw_stdout=exc.stdout or "",
-                raw_stderr=exc.stderr or "",
-            )
-        finally:
-            # Cleanup must never override the verification result.
-            try:
-                subprocess.run(
-                    [docker, "image", "rm", "-f", image_tag],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                )
-            except (subprocess.TimeoutExpired, OSError):
-                pass
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
-        elapsed = time.monotonic() - started
-
-        if run.returncode == 0:
-            return VerificationOutput(
-                status=VerificationResult.PASS,
-                target_file=str(target_abs),
-                raw_stdout=(
-                    f"Target executed successfully in {elapsed:.1f}s.\n"
-                    + run.stdout
-                ),
-                raw_stderr=run.stderr,
-            )
-
-        status, error_type = _classify_runtime_failure(run.stderr)
         return VerificationOutput(
-            status=status,
+            status=VerificationResult.TIMEOUT,
             target_file=str(target_abs),
-            error_type=error_type,
+            error_type="DockerBuildTimeout",
+            error_message=f"Docker image build exceeded {build_timeout} seconds.",
+            raw_stdout=build_stdout,
+            raw_stderr=build_stderr,
+        )
+
+    if returncode != 0:
+        return VerificationOutput(
+            status=VerificationResult.ENVIRONMENT_ERROR,
+            target_file=str(target_abs),
+            error_type="DockerBuildError",
             error_message=(
-                run.stderr.strip()
-                or run.stdout.strip()
-                or f"Target exited with code {run.returncode}."
+                build_stderr.strip()
+                or build_stdout.strip()
+                or "Docker image build failed."
+            ),
+            raw_stderr=build_stderr,
+            raw_stdout=build_stdout,
+        )
+
+    try:
+        run = subprocess.run(
+            [
+                docker,
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                image_tag,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return VerificationOutput(
+            status=VerificationResult.TIMEOUT,
+            target_file=str(target_abs),
+            error_type="ExecutionTimeout",
+            error_message=f"Target execution exceeded {timeout} seconds.",
+            raw_stdout=exc.stdout or "",
+            raw_stderr=exc.stderr or "",
+        )
+    finally:
+        # Cleanup must never override the verification result.
+        try:
+            subprocess.run(
+                [docker, "image", "rm", "-f", image_tag],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    elapsed = time.monotonic() - started
+
+    if run.returncode == 0:
+        return VerificationOutput(
+            status=VerificationResult.PASS,
+            target_file=str(target_abs),
+            raw_stdout=(
+                f"Target executed successfully in {elapsed:.1f}s.\n"
+                + run.stdout
             ),
             raw_stderr=run.stderr,
-            raw_stdout=run.stdout,
         )
+
+    status, error_type = _classify_runtime_failure(run.stderr)
+    return VerificationOutput(
+        status=status,
+        target_file=str(target_abs),
+        error_type=error_type,
+        error_message=(
+            run.stderr.strip()
+            or run.stdout.strip()
+            or f"Target exited with code {run.returncode}."
+        ),
+        raw_stderr=run.stderr,
+        raw_stdout=run.stdout,
+    )
