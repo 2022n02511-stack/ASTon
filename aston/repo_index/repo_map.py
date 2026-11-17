@@ -181,12 +181,15 @@ def migrate_repo(path: str):
     root = rel_path.expanduser().resolve()
 
     # 1. Generate and save repo index
+    # 1. Generate and save repo index inside .aston/
     repo_index = repo_map(path)
+    aston_dir = root / ".aston"
+    aston_dir.mkdir(parents=True, exist_ok=True)
 
-    with open('repo_index.json', 'w', encoding='utf-8') as f:
-        json.dump(repo_index, f, indent=3)
+    repo_index_path = aston_dir / "repo_index.json"
+    repo_index_path.write_text(json.dumps(repo_index, indent=3), encoding="utf-8")
 
-    # 2. Build migrations dictionary
+    # 2. Build and save migrations dictionary inside .aston/
     migrations = {}
     file_contexts = {}
 
@@ -201,20 +204,14 @@ def migrate_repo(path: str):
                 target_version, 
                 repo_index["symbols"]
             )
-            info(f"composed_rules: {composed_rules}")
-            # print(raw_code_examples)
-            # print(doc_text)
-            
             migrations[module] = {
                 'composed_rules': composed_rules,
                 'doc_text': doc_text,
                 'raw_code_examples': raw_code_examples
             }
 
-            print(migrations)
-
-    with open('migrations.json', 'w', encoding='utf-8') as f:
-        json.dump(migrations, f, indent=3)
+    migrations_path = aston_dir / "migrations.json"
+    migrations_path.write_text(json.dumps(migrations, indent=3), encoding="utf-8")
 
     # 3. Setup temporary requirements.txt
     

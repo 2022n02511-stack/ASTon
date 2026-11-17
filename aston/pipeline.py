@@ -1,11 +1,11 @@
-from aston.axios import code_patcher, stage0, scraper
-from aston.docker import verify_single_file_in_docker, VerificationResult
-from aston.watcher import watcher
-from aston.scanner import parser
 from pathlib import Path
+from aston.scanner import parser
+from aston.watcher import watcher
 import json
 import os
 from uuid import uuid4
+from aston.axios import code_patcher, stage0, scraper
+from aston.docker import verify_single_file_in_docker, VerificationResult
 from aston.repo_index import repo_map
 from aston.cli.console import rich_success, error, warning, info
 
@@ -407,9 +407,6 @@ def repair_file(
             _record_failure(display_path, failed_files)
             return False
 
-        # original_path.parent.mkdir(parents=True, exist_ok=True)
-        # original_path.write_text(verified_code, encoding="utf-8")
-
         _save_successful_migration(
             path,
             verified_code,
@@ -443,17 +440,20 @@ def run_for_repo(
     passed_files: list,
     failed_files: list,
     max_tries: int,
-    docker_file_time  
+    docker_file_time,
+    run_dir: Path
 ):
-    with open("repo_index.json", "r", encoding="utf-8") as f:
+    root = Path(root_path).expanduser().resolve()
+    aston_dir = root / ".aston"
+
+    repo_index_path = aston_dir / "repo_index.json"
+    migrations_path = aston_dir / "migrations.json"
+
+    with open(repo_index_path, "r", encoding="utf-8") as f:
         repo_index = json.load(f)
 
-    with open("migrations.json", "r", encoding="utf-8") as f:
+    with open(migrations_path, "r", encoding="utf-8") as f:
         migrations = json.load(f)
-
-    run_id = uuid4().hex[:12]
-    run_dir = Path("aston/artifacts") / "runs" / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
 
     print("\n==================================================")
     print("--- [Stage 0] Global Repository Scanned Usages ---")
@@ -465,8 +465,6 @@ def run_for_repo(
     all_tar_vers: dict[str, str] = {}
     incomplete_packages: list[str] = []
 
-    # Stage 0 remains repository-wide. Actual matching in scraper is
-    # restricted to the current file.
     for module, mod_data in migrations.items():
         stage0_symbols = stage0(module, repo_index)
 
@@ -485,7 +483,6 @@ def run_for_repo(
         composed_rules = mod_data.get("composed_rules", [])
         doc_text = mod_data.get("doc_text", "")
 
-        # IMPORTANT: only this file's usages are passed to scraper/man_extract.
         file_usages = _get_file_usages(
             repo_index=repo_index,
             path=path,
@@ -493,14 +490,11 @@ def run_for_repo(
             package_name=module,
         )
 
-        
         info(
             f"File-specific usages for {path} / {module}: "
             f"{len(file_usages)}"
         )
 
-        # Do not run relevance/completeness analysis for a package
-        # that has no indexed usages in the current file.
         if not file_usages:
             warning(
                 f"[SKIP] {path} has no indexed usages of {module}; "
@@ -521,7 +515,6 @@ def run_for_repo(
             source_file=path,
         )
 
-
         if not report:
             warning(
                 f"No legacy usages matched in {path}. "
@@ -532,13 +525,11 @@ def run_for_repo(
         if not is_complete:
             incomplete_packages.append(module)
 
-        # Each report now represents matches from the current file only.
         all_rules[module] = relevant_rules
         all_reports[module] = report
         all_cur_vers[module] = current_version
         all_tar_vers[module] = target_version
 
-    # Flatten rules and ensure every rule has a package identifier.
     flat_all_rules = []
 
     for pkg, pkg_rules in all_rules.items():
@@ -577,7 +568,7 @@ def run_for_repo(
 
     flat_filename = path.replace("/", "_")
     output_path = (
-        Path("final_reports")
+        root / ".aston" / "reports"
         / f"{Path(flat_filename).stem}_changes.json"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -602,8 +593,6 @@ def run_for_repo(
         for package_rules in validated_all_rules_dict.values()
     )
 
-    # Reports are now file-specific, so this checks whether this file has
-    # actual matched usages instead of merely checking that an audit exists.
     has_valid_matches = any(
         isinstance(report, list) and len(report) > 0
         for report in all_reports.values()
@@ -627,43 +616,24 @@ def run_for_repo(
         if isinstance(examples, list):
             raw_code_examples.extend(examples)
 
-        # Normalize repository and source paths before creating the candidate.
-    root_path = Path(root_path).expanduser().resolve()
     source_path = Path(path).expanduser()
 
     if not source_path.is_absolute():
-        source_path = root_path / source_path
+        source_path = root / source_path
 
     source_path = source_path.resolve()
 
     try:
-        source_path.relative_to(root_path)
+        source_path.relative_to(root)
     except ValueError as exc:
         raise ConfigurationError(
-            message=f"Source file {source_path} is outside repository root {root_path}.",
+            message=f"Source file {source_path} is outside repository root {root}.",
             details="All files targeted for migration must be located within the active repository workspace."
         ) from exc
 
     original_path = source_path
+    run_id = run_dir.name
     candidate_path = _candidate_path(source_path, run_id).resolve()
-
-    print("\n--- CANDIDATE DIAGNOSTICS ---")
-    info(f"Repository root: {root_path}")
-    info(f"Original path: {original_path}")
-    info(f"Candidate path: {candidate_path}")
-    info(f"Candidate exists: {candidate_path.is_file()}")
-    print("-----------------------------\n")
-
-    print("\n--- CANDIDATE DIAGNOSTICS ---")
-    info(f"Candidate path: {candidate_path}")
-    info(f"Candidate exists: {candidate_path.is_file()}")
-
-    if candidate_path.is_file():
-        info(f"Candidate size: {candidate_path.stat().st_size} bytes")
-    else:
-        error("ERROR: Candidate was not written before verification.")
-
-    print("-----------------------------\n")
 
     if not _write_candidate(candidate_path, source_code):
         error(
@@ -711,11 +681,10 @@ def run_for_repo(
             _record_failure(path, failed_files)
             return False, {}
 
-        # Initial verification is performed exactly once.
         pr = verify_single_file_in_docker(
             str(candidate_path),
             temp_req_path,
-            repo_root=root_path,
+            repo_root=root,
             timeout=docker_file_time
         )
 
@@ -740,21 +709,16 @@ def run_for_repo(
         }
 
         if pr.status == VerificationResult.PASS:
-
             verified_code = _safe_read_text(candidate_path)
 
-            # Preserve the original source file.
-            # Save the verified migrated code to succ_migrations instead.
             _save_successful_migration(
                 path,
                 verified_code,
                 file_run_dir,
-                root_path,
+                str(root),
             )
 
-            # Remove the candidate only after its successful migration is saved.
             candidate_path.unlink(missing_ok=True)
-
             _record_success(path, passed_files, failed_files)
 
             rich_success("Sandboxed Verification Successful!")
@@ -765,17 +729,11 @@ def run_for_repo(
             "Starting repair loop..."
         )
 
-        print("\n[ASTON DEBUG] BEFORE REPAIR CALL")
-        print(f"[ASTON DEBUG] path: {path!r}")
-        print(f"[ASTON DEBUG] candidate_path: {candidate_path}")
-        print(f"[ASTON DEBUG] candidate exists: {candidate_path.is_file()}")
-        print("[ASTON DEBUG] END BEFORE REPAIR CALL\n")
-
         success = repair_file(
             path=str(candidate_path),
             temp_req_path=temp_req_path,
             context_data=context_data,
-            root_path=root_path,
+            root_path=str(root),
             docker_time=docker_file_time,
             initial_result=pr,
             max_retries=max_tries,
@@ -786,6 +744,5 @@ def run_for_repo(
         return success, context_data
 
     finally:
-        # Remove candidate after success. Keep it after failure for diagnosis.
         if path in passed_files and candidate_path.exists():
             candidate_path.unlink()
