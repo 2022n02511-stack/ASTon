@@ -23,6 +23,7 @@ from aston.Utils.utility import request_with_backoff
 from aston.llm import call_llm
 from aston.config import load_config
 from typing import List, Dict, Any
+from aston.paths import find_repo_root, get_aston_paths
 
 
 
@@ -32,14 +33,22 @@ from typing import List, Dict, Any
 load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-# API_KEY = os.getenv("MISTRAL_API_KEY")
-# client = Mistral(api_key=API_KEY) if API_KEY else None
-
 GITHUB_API = "https://api.github.com"
 REQUEST_TIMEOUT = 20
 
 EXTRACTION_SCHEMA_VERSION = "v7-discussion-chunked-cache-safe"
-CACHE_DIR = Path(".sma/rule_cache_v7")
+
+# Route cache safely inside .aston/ instead of leaking into the repo root
+try:
+    repo_root = find_repo_root()
+    aston_paths = get_aston_paths(repo_root)
+    CACHE_DIR = aston_paths["aston_dir"] / "cache" / "rule_cache_v7"
+except Exception:
+    # Safe fallback if imported outside a valid repo root context
+    CACHE_DIR = Path(".aston/cache/rule_cache_v7")
+
+# Ensure cache directory exists
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class MigrationRule(BaseModel):

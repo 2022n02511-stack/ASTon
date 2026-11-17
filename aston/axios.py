@@ -21,7 +21,8 @@ from aston.config import load_config
 # API_KEY = os.environ.get("MISTRAL_API_KEY")
 # client = Mistral(api_key=API_KEY) if API_KEY else None
 
-with open("patcher_prompt.txt", "r", encoding="utf-8") as f:
+prompt_path = Path(__file__).parent / "patcher_prompt.txt"
+with open(prompt_path, "r", encoding="utf-8") as f:
     prompt = f.read()
 
 

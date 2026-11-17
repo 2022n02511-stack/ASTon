@@ -280,11 +280,14 @@ def repair_file(
 
     rep_con = context_data.get("repair_instructions")
 
-    if rep_con is None:
-        repair_context_path = Path("repair_context.txt")
+    rep_con = context_data.get("repair_instructions")
 
-        if repair_context_path.exists():
-            rep_con = repair_context_path.read_text(encoding="utf-8")
+    if rep_con is None:
+        # Resolve relative to this python file's directory
+        repair_context_path = Path(__file__).parent / "repair_context.txt"
+
+    if repair_context_path.exists():
+        rep_con = repair_context_path.read_text(encoding="utf-8")
 
     # Reuse the initial result instead of verifying the same candidate twice.
     pr = initial_result
