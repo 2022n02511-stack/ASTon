@@ -7,12 +7,39 @@ import yaml
 import sys
 from pathlib import Path
 from aston.llm import call_llm
+from aston.paths import get_aston_paths
 
 
 def handle_init():
-    """Execute `aston init`"""
+    """Execute `aston init` (Git-like workspace and configuration setup)."""
     info("Initializing ASTon configuration environment...")
+    
+    # 1. Save default configuration (keeping your existing setup)
     save_default_config()
+    
+    # 2. Bootstrap the hidden .aston/ workspace and subdirectories in the current repo root
+    repo_root = Path.cwd().resolve()
+    paths = get_aston_paths(repo_root)
+    
+    paths["staging"].mkdir(parents=True, exist_ok=True)
+    paths["runs"].mkdir(parents=True, exist_ok=True)
+    paths["reports"].mkdir(parents=True, exist_ok=True)
+    
+    # 3. Automatically protect the workspace via .gitignore
+    gitignore_path = repo_root / ".gitignore"
+    ignore_entry = ".aston/"
+    
+    if gitignore_path.is_file():
+        content = gitignore_path.read_text(encoding="utf-8", errors="replace")
+        if ignore_entry not in content:
+            with open(gitignore_path, "a", encoding="utf-8") as f:
+                f.write(f"\n# ASTon AI Migration Workspace\n{ignore_entry}\n")
+            info("Added .aston/ to existing .gitignore")
+    else:
+        gitignore_path.write_text(f"# ASTon AI Migration Workspace\n{ignore_entry}\n", encoding="utf-8")
+        info("Created .gitignore and added .aston/")
+    
+    rich_success(f"Workspace initialized at: {paths['aston_dir'].relative_to(repo_root)}")
     rich_success(f"Logs directory ready at: {LOGS_DIR}")
     info("Setup complete! You are ready to run migrations.")
 
