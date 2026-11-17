@@ -24,7 +24,6 @@ def discover_python_files(root: Path) -> list[Path]:
         ".venv",
         "venv",
         "__pycache__",
-        "succ_migrations",
         "final_reports",
         "reports",
         "build",
@@ -270,16 +269,17 @@ def migrate_repo(path: str):
 
     # Save target requirements alongside successful migration artifacts.
     # Keep the temporary requirements file for Docker verification for now.
-    success_root = Path(__file__).resolve().parents[1] / "succ_migrations"
-    success_root.mkdir(parents=True, exist_ok=True)
+    # Save target requirements alongside staged migration artifacts.
+    staging_root = root / ".aston" / "staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
 
-    success_req_path = success_root / "requirements.txt"
+    success_req_path = staging_root / "requirements.txt"
     success_req_path.write_text(
         temp_req_path.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
 
-    rich_success(f"Target requirements saved to: {success_req_path}")
+    rich_success(f"Target requirements saved to: {success_req_path.relative_to(root)}")
 
     info(f"Original requirements: {original_req_path}")
     info(f"Temporary requirements: {temp_req_path}")
@@ -380,7 +380,7 @@ def migrate_repo(path: str):
     print("--- [Stage 6] Repo-Wide Integration Verification ---")
     print("==================================================")
 
-    migration_root = Path(__file__).resolve().parents[1] / "succ_migrations"
+    migration_root = root / ".aston" / "staging"
 
     test_result = verify_full_repo_in_docker(
         str(root),

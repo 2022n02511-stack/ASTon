@@ -66,7 +66,7 @@ def _save_successful_migration(
     file_run_dir: Path,
     root_path: str,
 ) -> None:
-    """Save verified source to artifacts and succ_migrations."""
+    """Save verified source to artifacts and staged migration workspace."""
 
     save_code(file_run_dir / "final.py", verified_code)
 
@@ -84,13 +84,25 @@ def _save_successful_migration(
             details="Ensure target files reside within the active repository directory."
         ) from exc
 
-    migration_root = Path(__file__).resolve().parent / "succ_migrations"
-    migrated_path = migration_root / relative_path
+    # Staged workspace mirroring Git-like staging under target repo root
+    staging_root = repo_root / ".aston" / "staging"
+    migrated_path = staging_root / relative_path
 
     migrated_path.parent.mkdir(parents=True, exist_ok=True)
     migrated_path.write_text(verified_code, encoding="utf-8")
 
-    rich_success(f"Code successfully patched and saved to {migrated_path}")
+    # Ensure .aston/ is automatically ignored in git
+    gitignore_path = repo_root / ".gitignore"
+    ignore_entry = ".aston/"
+    if gitignore_path.is_file():
+        content = gitignore_path.read_text(encoding="utf-8", errors="replace")
+        if ignore_entry not in content:
+            with open(gitignore_path, "a", encoding="utf-8") as f:
+                f.write(f"\n# ASTon AI Migration Staging\n{ignore_entry}\n")
+    else:
+        gitignore_path.write_text(f"# ASTon AI Migration Staging\n{ignore_entry}\n", encoding="utf-8")
+
+    rich_success(f"Code successfully patched and staged to {migrated_path.relative_to(repo_root)}")
 
 
 def _find_file_entry(repo_index: dict, path: str, root_path: str) -> dict:
