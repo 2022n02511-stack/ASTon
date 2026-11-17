@@ -564,10 +564,18 @@ def scraper(
     print("\n========== FINAL COVERAGE STATUS ==========")
     info(f"\nComplete: {is_genuinely_complete}")
 
-    with open("changes.json", "w", encoding="utf-8") as f:
-        json.dump(relevant_rules, f, indent=2, default=str)
+    # Resolve target repo root and route changes.json into .aston/reports/
+    repo_root = Path.cwd().resolve() # Or pass root_path down if available
+    reports_dir = repo_root / ".aston" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
 
-    info("Canonical contract saved in changes.json")
+    changes_path = reports_dir / "changes.json"
+    changes_path.write_text(
+        json.dumps(relevant_rules, indent=2, default=str),
+        encoding="utf-8"
+    )
+
+    info(f"Canonical contract saved in {changes_path.relative_to(repo_root)}")
 
     print("\n==================================================")
     print("--- [Stage 3] Matching Usages ---")

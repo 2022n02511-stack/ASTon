@@ -24,7 +24,6 @@ def discover_python_files(root: Path) -> list[Path]:
         ".venv",
         "venv",
         "__pycache__",
-        "final_reports",
         "reports",
         "build",
         "dist",

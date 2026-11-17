@@ -7,7 +7,93 @@ import yaml
 import sys
 from pathlib import Path
 from aston.llm import call_llm
-from aston.paths import get_aston_paths
+from aston.paths import get_aston_paths, find_repo_root
+from pathlib import Path
+import difflib
+import shutil
+from aston.cli.console import rich_success, error, warning, info
+
+def handle_status():
+    """List all staged files pending review or PR creation."""
+    repo_root = find_repo_root()
+    paths = get_aston_paths(repo_root)
+    staging_dir = paths["staging"]
+
+    if not staging_dir.is_dir() or not any(staging_dir.iterdir()):
+        info("No changes staged. Run 'aston migrate' to begin a migration.")
+        return
+
+    print("\n==================================================")
+    print("--- ASTon Staged Migration Workspace Status ---")
+    print("==================================================")
+    
+    staged_files = [f for f in staging_dir.rglob("*.py") if f.is_file()]
+    for file_path in staged_files:
+        rel = file_path.relative_to(staging_dir)
+        rich_success(f"  staged:   {rel}")
+    
+    print("--------------------------------------------------")
+    info(f"Total staged files: {len(staged_files)}")
+    info("Run 'aston diff' to inspect changes, or 'aston pr' to push.")
+
+
+def handle_diff():
+    """Compare working tree files against their staged migrated counterparts."""
+    repo_root = find_repo_root()
+    paths = get_aston_paths(repo_root)
+    staging_dir = paths["staging"]
+
+    if not staging_dir.is_dir() or not any(staging_dir.iterdir()):
+        info("No staged files found to diff.")
+        return
+
+    staged_files = [f for f in staging_dir.rglob("*.py") if f.is_file()]
+    
+    for staged_path in staged_files:
+        rel = staged_path.relative_to(staging_dir)
+        original_path = repo_root / rel
+
+        if not original_path.is_file():
+            warning(f"[NEW] {rel} (Staged file does not exist in working tree yet)")
+            continue
+
+        original_code = original_path.read_text(encoding="utf-8").splitlines()
+        staged_code = staged_path.read_text(encoding="utf-8").splitlines()
+
+        diff = list(difflib.unified_diff(
+            original_code,
+            staged_code,
+            fromfile=f"a/{rel}",
+            tofile=f"b/{rel}",
+            lineterm=""
+        ))
+
+        if diff:
+            print(f"\n--- Diff for {rel} ---")
+            for line in diff:
+                if line.startswith("+") and not line.startswith("+++"):
+                    print(f"\033[32m{line}\033[0m")  # Green for additions
+                elif line.startswith("-") and not line.startswith("---"):
+                    print(f"\033[31m{line}\033[0m")  # Red for deletions
+                else:
+                    print(line)
+
+
+def handle_clean():
+    """Wipe out staging and temporary runtime artifacts."""
+    repo_root = find_repo_root()
+    paths = get_aston_paths(repo_root)
+    
+    aston_dir = paths["aston_dir"]
+    if aston_dir.is_dir():
+        shutil.rmtree(paths["staging"], ignore_errors=True)
+        shutil.rmtree(paths["runs"], ignore_errors=True)
+        paths["staging"].mkdir(parents=True, exist_ok=True)
+        paths["runs"].mkdir(parents=True, exist_ok=True)
+        rich_success("ASTon staging area and temporary run artifacts cleaned successfully.")
+    else:
+        info("No ASTon workspace found to clean.")
+
 
 
 def handle_init():

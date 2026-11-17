@@ -567,6 +567,8 @@ def run_for_repo(
     )
 
     flat_filename = path.replace("/", "_")
+    
+    # Updated: Route audit contracts directly into .aston/reports/ instead of final_reports/
     output_path = (
         root / ".aston" / "reports"
         / f"{Path(flat_filename).stem}_changes.json"
@@ -576,7 +578,7 @@ def run_for_repo(
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(final_report_dict, f, indent=3)
 
-    info(f"Canonical audit contract saved to {output_path}")
+    info(f"Canonical audit contract saved to {output_path.relative_to(root)}")
 
     validated_all_rules_dict = {}
 
