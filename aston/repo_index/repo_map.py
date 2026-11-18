@@ -218,7 +218,14 @@ def migrate_repo(path: str):
     root = Path(root).expanduser().resolve()
 
     original_req_path = root / "requirements.txt"
-    temp_req_path = root / "temp_requirements.txt"
+    
+    # Route temporary requirements inside .aston/runs/ instead of the repo root
+    aston_dir = root / ".aston"
+    aston_dir.mkdir(parents=True, exist_ok=True)
+    runs_dir = aston_dir / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    
+    temp_req_path = runs_dir / "temp_requirements.txt"
 
     if not original_req_path.is_file():
         raise ConfigurationError(
