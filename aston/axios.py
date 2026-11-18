@@ -15,7 +15,7 @@ from aston.exceptions import ConfigurationError, LLMError
 import time
 from aston.llm import call_llm
 from aston.config import load_config
-
+from aston.paths import find_repo_root
 
 
 # API_KEY = os.environ.get("MISTRAL_API_KEY")
@@ -404,7 +404,7 @@ def scraper(
 
     working_doc_text = doc_text or ""
 
-    print("\n========== STAGE 2: INITIAL AUDIT ==========")
+    print("\n========== INITIAL AUDIT ==========")
     info(f"STAGE 0 SYMBOLS: {sorted(stage0_symbols)}")
     info(f"INITIAL RULE COUNT: {len(working_rules)}")
 
@@ -477,10 +477,7 @@ def scraper(
             info(f"NEW DISTINCT RULES ADDED: {added_count}")
 
         except Exception as exc:
-            error(
-                "Targeted extraction failed:",
-                repr(exc),
-            )
+            error(f"Targeted extraction failed: {repr(exc)}")
 
         audit = evaluate_relevance_and_completeness(
             stage0_symbols,
@@ -493,9 +490,9 @@ def scraper(
     # ==================================================
     uncovered_after_extraction = normalize_set(audit.get("uncovered_symbols", []))
     if uncovered_after_extraction or len(working_rules) == 0:
-        print("\n==================================================")
-        print("--- [Stage 1.75] LLM Semantic Synthesis Fallback ---")
-        print("==================================================")
+        print("\n=======================================")
+        print("--- LLM Semantic Synthesis Fallback ---")
+        print("==========================================")
         info(f"Uncovered symbols requiring fallback synthesis: {sorted(uncovered_after_extraction or observed_symbols)}")
         
         symbols_to_synthesize = list(uncovered_after_extraction or observed_symbols)
@@ -525,6 +522,7 @@ def scraper(
         info(f"SYNTHESIZED FALLBACK RULES ADDED: {fallback_added}")
 
         # Re-audit with synthesized rules included
+            # Re-audit with synthesized rules included
         audit = evaluate_relevance_and_completeness(
             stage0_symbols,
             working_rules,
@@ -537,8 +535,24 @@ def scraper(
     print()
     info(f"OBSERVED: {sorted(observed_symbols)}")
     info(f"TOTAL RULES: {len(working_rules)}")
-    info("FINAL AUDIT RESULT:")
-    info(json.dumps(audit, indent=2, default=str))
+    info("FINAL AUDIT RESULT SAVED:")
+
+    # --- Save Final Audit Result Artifact ---
+    repo_root = find_repo_root()
+    reports_dir = repo_root / ".aston" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    # Use package name to keep audit files distinct per dependency
+    audit_filename = f"{pkg_name.lower()}_final_audit_result.json"
+    final_audit_path = reports_dir / audit_filename
+    
+    final_audit_path.write_text(
+        json.dumps(audit, indent=3, default=str),
+        encoding="utf-8"
+    )
+    info(f"  -> {final_audit_path.relative_to(repo_root)}")
+    # ----------------------------------------
+
 
     relevant_rules = audit.get("relevant_records", [])
     
@@ -566,7 +580,7 @@ def scraper(
     info(f"\nComplete: {is_genuinely_complete}")
 
     # Resolve target repo root and route changes.json into .aston/reports/
-    repo_root = Path.cwd().resolve() # Or pass root_path down if available
+    repo_root = find_repo_root() # Or pass root_path down if available
     reports_dir = repo_root / ".aston" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
 

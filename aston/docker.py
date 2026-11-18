@@ -386,8 +386,9 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
         (context / "Dockerfile").write_text(dockerfile, encoding="utf-8")
 
         # Build offline first; only a clear connectivity failure triggers retry.
+        # Build with default network access so pip install can reach PyPI
         build_command = [
-            docker, "build", "--network=none", "--progress=plain",
+            docker, "build", "--progress=plain",
             "--tag", image_tag, "--file", str(context / "Dockerfile"),
             str(context),
         ]
@@ -405,7 +406,7 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
             )
 
         attempts.append({
-            "stage": "build", "network_mode": "none",
+            "stage": "build", "network_mode": "default",
             "returncode": rc, "timed_out": build_timeout_hit,
         })
 

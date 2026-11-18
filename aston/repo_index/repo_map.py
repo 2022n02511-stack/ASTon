@@ -13,7 +13,7 @@ from uuid import uuid4
 from aston.cli.console import rich_success, error, warning, info
 from aston.exceptions import ConfigurationError, MigrationError, VerificationError
 from aston.config import load_config
-
+from aston.artifacts.save_attempt import save_full_repo_verification_result
 
 
 
@@ -297,6 +297,10 @@ def migrate_repo(path: str):
     passed_files = []
     failed_files = []
 
+    run_id = uuid4().hex[:8]
+    run_dir = root / ".aston" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
     for py_file in py_files:
         relative_path = str(py_file.relative_to(root))
 
@@ -319,7 +323,8 @@ def migrate_repo(path: str):
             passed_files=passed_files,
             failed_files=failed_files,
             max_tries=per_file_retries,
-            docker_file_time=docker_file_timeout
+            docker_file_time=docker_file_timeout,
+            run_dir=run_dir
         )
 
         if context_data:
@@ -366,7 +371,7 @@ def migrate_repo(path: str):
             f"Migration completed with partial failures. "
             f"{len(failed_files)} file(s) failed after repair attempts."
         )
-        info("Detailed debugging artifacts remain preserved inaston/artifacts/runs/.")
+        info("Detailed debugging artifacts remain preserved in .aston/runs/.")
         info("Proceeding with full-repo verification and PR creation for successfully migrated files...")
     else:
         rich_success("All files migrated successfully!")
@@ -391,6 +396,8 @@ def migrate_repo(path: str):
         migration_root / "requirements.txt",
         timeout=docker_repo_timeout
     )
+
+    save_full_repo_verification_result(run_dir, test_result)
 
     if test_result.get("status") == "PASS":
         temp_req_path.unlink(missing_ok=True)

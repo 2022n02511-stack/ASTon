@@ -49,33 +49,35 @@ def watcher(path: str) -> dict:
             continue
 
         try:
-            # Use packaging library for reliable specifier & package name parsing
             req = Requirement(line)
             pkg_name = req.name
             pkg_key = pkg_name.lower()
 
             declared_version = None
             
-            # 1. Prioritize exact pins (==)
             for spec in req.specifier:
                 if spec.operator == "==":
                     declared_version = spec.version
                     break
 
-            # 2. Fallback to lower bounds (>=, ~=, >) if no exact pin exists
             if declared_version is None:
                 for spec in req.specifier:
                     if spec.operator in (">=", "~=", ">"):
                         declared_version = spec.version
                         break
 
-            # 3. Fallback to any specifier version if bounds aren't directional
             if declared_version is None and req.specifier:
                 specs_list = list(req.specifier)
                 if specs_list:
                     declared_version = specs_list[0].version
 
             target_version = get_latest_pypi_version(pkg_key) or declared_version
+
+            # --- Evaluate Breaking Change Status ---
+            is_breaking = False
+            if declared_version and target_version:
+                is_breaking = is_major_version_change(declared_version, target_version)
+            # --------------------------------------
 
             dependencies[pkg_key] = {
                 "declared": {
@@ -87,11 +89,11 @@ def watcher(path: str) -> dict:
                 "resolved": None,
                 "installed": None,
                 "target_version": target_version,
+                "is_breaking": is_breaking,  # <--- Track explicitly in metadata
                 "provenance_status": "declared"
             }
 
         except InvalidRequirement:
-            # Fallback regex parsing for malformed lines or custom directives
             match = re.match(r"^([a-zA-Z0-9\-_.]+)(.*?)$", line)
             if match:
                 pkg_name = match.group(1)
@@ -101,6 +103,10 @@ def watcher(path: str) -> dict:
                 parsed_version = version_match.group(1) if version_match else None
 
                 target_version = get_latest_pypi_version(pkg_key) or parsed_version
+
+                is_breaking = False
+                if parsed_version and target_version:
+                    is_breaking = is_major_version_change(parsed_version, target_version)
 
                 dependencies[pkg_key] = {
                     "declared": {
@@ -112,16 +118,12 @@ def watcher(path: str) -> dict:
                     "resolved": None,
                     "installed": None,
                     "target_version": target_version,
+                    "is_breaking": is_breaking,
                     "provenance_status": "declared"
                 }
 
     # --- Notification Ledger Integration ---
-    breaking_count = 0
-    for pkg_data in dependencies.values():
-        decl = pkg_data["declared"]["version"]
-        target = pkg_data["target_version"]
-        if decl and target and is_major_version_change(decl, target):
-            breaking_count += 1
+    breaking_count = sum(1 for pkg in dependencies.values() if pkg.get("is_breaking"))
 
     if breaking_count > 0:
         log_notification(

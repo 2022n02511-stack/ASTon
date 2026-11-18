@@ -18,6 +18,7 @@ from aston.cli.commands import (
 from aston.config import load_config, set_runtime_config
 from aston.ledger import log_notification, show_notifications
 
+
 def main():
     parser = argparse.ArgumentParser(
         prog="aston",
