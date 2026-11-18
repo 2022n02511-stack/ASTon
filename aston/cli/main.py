@@ -16,6 +16,7 @@ from aston.cli.commands import (
     handle_clean,
 )
 from aston.config import load_config, set_runtime_config
+from aston.ledger import log_notification, show_notifications
 
 def main():
     parser = argparse.ArgumentParser(
@@ -214,6 +215,19 @@ def main():
         help="Commit/PR description body",
     )
 
+    #ledger command
+    # Notifications ledger view command
+    notif_parser = subparsers.add_parser(
+        "notifications",
+        help="View local workspace notification history ledger"
+    )
+    notif_parser.add_argument(
+        "--path",
+        type=str,
+        default=None,
+        help="Repository directory (defaults to CWD discovery)",
+    )
+
     args = parser.parse_args()
 
     try:
@@ -224,6 +238,10 @@ def main():
         if args.command == "init":
             repo_path = get_target_repo()
             handle_init(repo_path)  # Pass path if your handle_init supports it, or let it bind
+
+        elif args.command == "notifications":
+            repo_path = Path(args.path).expanduser().resolve() if args.path else find_repo_root()
+            show_notifications(repo_path)    
 
         elif args.command == "status":
             repo_path = get_target_repo()

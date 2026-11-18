@@ -1,4 +1,5 @@
 from aston.ingestion import get_latest_pypi_version
+from aston.ledger import log_notification
 from pathlib import Path
 from packaging.requirements import Requirement, InvalidRequirement
 from packaging.version import Version, InvalidVersion
@@ -8,8 +9,8 @@ from aston.exceptions import ConfigurationError
 
 def is_major_version_change(current_version, target_version):
     try:
-        current = Version(current_version)
-        target = Version(target_version)
+        current = Version(str(current_version))
+        target = Version(str(target_version))
         
         # For pre-1.0 packages, minor releases can introduce breaking changes.
         if current.major == 0 and target.major == 0:
@@ -113,5 +114,28 @@ def watcher(path: str) -> dict:
                     "target_version": target_version,
                     "provenance_status": "declared"
                 }
+
+    # --- Notification Ledger Integration ---
+    breaking_count = 0
+    for pkg_data in dependencies.values():
+        decl = pkg_data["declared"]["version"]
+        target = pkg_data["target_version"]
+        if decl and target and is_major_version_change(decl, target):
+            breaking_count += 1
+
+    if breaking_count > 0:
+        log_notification(
+            repo_root=folder_path,
+            level="warning",
+            title="Breaking Changes Detected",
+            message=f"Scanned {len(dependencies)} packages; found {breaking_count} major version upgrade(s)."
+        )
+    else:
+        log_notification(
+            repo_root=folder_path,
+            level="success",
+            title="Dependency Check Passed",
+            message=f"Successfully scanned {len(dependencies)} packages with no breaking changes."
+        )
 
     return dependencies
