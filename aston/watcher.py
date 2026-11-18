@@ -1,17 +1,30 @@
 from aston.ingestion import get_latest_pypi_version
+from aston.ledger import log_notification
 from pathlib import Path
-from packaging.version import Version
+from packaging.requirements import Requirement, InvalidRequirement
+from packaging.version import Version, InvalidVersion
 import re
 import json
 from aston.exceptions import ConfigurationError
 
 def is_major_version_change(current_version, target_version):
-    current_major = int(current_version.split(".")[0])
-    target_major = int(target_version.split(".")[0])
-    # print(current_version)
-    # print(target_version)
+    try:
+        current = Version(str(current_version))
+        target = Version(str(target_version))
+        
+        # For pre-1.0 packages, minor releases can introduce breaking changes.
+        if current.major == 0 and target.major == 0:
+            return target.minor > current.minor
 
-    return target_major > current_major
+        return target.major > current.major
+    except (InvalidVersion, AttributeError):
+        # Fallback split logic if version string is unconventional
+        try:
+            current_major = int(str(current_version).split(".")[0])
+            target_major = int(str(target_version).split(".")[0])
+            return target_major > current_major
+        except Exception:
+            return False
 
 def watcher(path: str) -> dict:
     dependencies = {}
@@ -35,32 +48,96 @@ def watcher(path: str) -> dict:
         if not line or line.startswith("#") or line.startswith("-"):
             continue
 
-        # Extract package name and check if it's an exact version pin vs range/constraint
-        match = re.match(r"^([a-zA-Z0-9\-_]+)", line)
-        if match:
-            pkg_name = match.group(1)
+        try:
+            req = Requirement(line)
+            pkg_name = req.name
             pkg_key = pkg_name.lower()
-            
-            # Check for exact version pin (e.g., openai==0.28.1)
-            exact_match = re.match(r"^[a-zA-Z0-9\-_]+\s*==\s*([0-9\.]+)$", line)
-            exact_version = exact_match.group(1) if exact_match else None
 
-            target_version = get_latest_pypi_version(pkg_key)
+            declared_version = None
+            
+            for spec in req.specifier:
+                if spec.operator == "==":
+                    declared_version = spec.version
+                    break
+
+            if declared_version is None:
+                for spec in req.specifier:
+                    if spec.operator in (">=", "~=", ">"):
+                        declared_version = spec.version
+                        break
+
+            if declared_version is None and req.specifier:
+                specs_list = list(req.specifier)
+                if specs_list:
+                    declared_version = specs_list[0].version
+
+            target_version = get_latest_pypi_version(pkg_key) or declared_version
+
+            # --- Evaluate Breaking Change Status ---
+            is_breaking = False
+            if declared_version and target_version:
+                is_breaking = is_major_version_change(declared_version, target_version)
+            # --------------------------------------
 
             dependencies[pkg_key] = {
                 "declared": {
                     "specifier": line,
-                    "version": exact_version,  # Null if it's a constraint range like 2.31,<3
+                    "version": declared_version,
                     "source_file": req_file.name,
                     "source_type": "requirements"
                 },
                 "resolved": None,
                 "installed": None,
-                "target_version": target_version if target_version else exact_version,
+                "target_version": target_version,
+                "is_breaking": is_breaking,  # <--- Track explicitly in metadata
                 "provenance_status": "declared"
             }
 
+        except InvalidRequirement:
+            match = re.match(r"^([a-zA-Z0-9\-_.]+)(.*?)$", line)
+            if match:
+                pkg_name = match.group(1)
+                pkg_key = pkg_name.lower()
+                
+                version_match = re.search(r"([0-9]+\.[0-9]+(?:\.[0-9]+)?)", line)
+                parsed_version = version_match.group(1) if version_match else None
+
+                target_version = get_latest_pypi_version(pkg_key) or parsed_version
+
+                is_breaking = False
+                if parsed_version and target_version:
+                    is_breaking = is_major_version_change(parsed_version, target_version)
+
+                dependencies[pkg_key] = {
+                    "declared": {
+                        "specifier": line,
+                        "version": parsed_version,
+                        "source_file": req_file.name,
+                        "source_type": "requirements"
+                    },
+                    "resolved": None,
+                    "installed": None,
+                    "target_version": target_version,
+                    "is_breaking": is_breaking,
+                    "provenance_status": "declared"
+                }
+
+    # --- Notification Ledger Integration ---
+    breaking_count = sum(1 for pkg in dependencies.values() if pkg.get("is_breaking"))
+
+    if breaking_count > 0:
+        log_notification(
+            repo_root=folder_path,
+            level="warning",
+            title="Breaking Changes Detected",
+            message=f"Scanned {len(dependencies)} packages; found {breaking_count} major version upgrade(s)."
+        )
+    else:
+        log_notification(
+            repo_root=folder_path,
+            level="success",
+            title="Dependency Check Passed",
+            message=f"Successfully scanned {len(dependencies)} packages with no breaking changes."
+        )
+
     return dependencies
-
-
-# sot = watcher('demo/')

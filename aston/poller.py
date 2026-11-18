@@ -32,7 +32,7 @@ def is_major_version_change(
 def _check_package(
     line: str,
 ) -> tuple[str, str | None, str | None, str | None] | None:
-    """Fetch the latest PyPI version for one requirement."""
+    """Fetch the latest PyPI version for one requirement, handling all operators & unpinned packages."""
     line = line.strip()
 
     if not line or line.startswith("#") or line.startswith("-"):
@@ -42,23 +42,29 @@ def _check_package(
         req = Requirement(line)
         package_name = req.name
 
-        # Exact pins are the most reliable declared-version baseline.
-        # For ranges, choose a lower bound when available.
+        # Extract declared version from specifiers if present.
+        # Supports '==', '>=', '~=', '>', '<=', '<', etc.
         declared_version = None
-
+        
+        # First priority: Look for exact pins (==)
         for spec in req.specifier:
             if spec.operator == "==":
                 declared_version = spec.version
                 break
 
+        # Second priority: Look for lower bounds (>=, ~=, >) if no exact pin exists
         if declared_version is None:
-            lower_bounds = [
-                spec.version
-                for spec in req.specifier
-                if spec.operator in (">=", "~=")
-            ]
-            if lower_bounds:
-                declared_version = lower_bounds[0]
+            for spec in req.specifier:
+                if spec.operator in (">=", "~=", ">"):
+                    declared_version = spec.version
+                    break
+
+        # Third priority: If upper bounds exist or package is completely unpinned, 
+        # we still fetch the latest PyPI version so ASTon knows what's out there.
+        if declared_version is None and req.specifier:
+            specs_list = list(req.specifier)
+            if specs_list:
+                declared_version = specs_list[0].version
 
         latest_version = get_latest_pypi_version(package_name)
 
@@ -80,7 +86,7 @@ def watcher(repo_path: str | Path) -> None:
     """
     Check requirements against PyPI and report potential major-version changes.
 
-    This is a one-time check, not a continuously running polling loop.
+    Supports exact pins, range specifiers, and unpinned package requirements.
     """
     repo_dir = Path(repo_path).expanduser().resolve()
     req_file = repo_dir / "requirements.txt"
@@ -151,7 +157,7 @@ def watcher(repo_path: str | Path) -> None:
             unpinned.append(package)
             info(
                 f"{package}: latest version is {latest}; "
-                "no exact declared version is available for comparison."
+                "no declared baseline version is available for comparison."
             )
             continue
 
@@ -196,6 +202,6 @@ def watcher(repo_path: str | Path) -> None:
 
     if unpinned:
         warning(
-            f"{len(unpinned)} package(s) lack a usable version "
+            f"{len(unpinned)} package(s) lack a version "
             "baseline; their compatibility could not be established."
         )

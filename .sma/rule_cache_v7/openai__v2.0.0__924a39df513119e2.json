@@ -1,0 +1,35 @@
+{
+  "rules": [
+    {
+      "package": "openai",
+      "old_api": "openai.types.ResponseFunctionToolCallOutputItem.output",
+      "new_api": null,
+      "requires_instantiation": null,
+      "migration_type": "removal",
+      "description": "ResponseFunctionToolCallOutputItem.output and ResponseCustomToolCallOutput.output now return string | Array<ResponseInputText | ResponseInputImage | ResponseInputFile> instead of string only.\nValidation concerns: This migration strategy requires manual review. No concrete replacement API has been established.",
+      "from_version": "v1.0.0",
+      "to_version": "v2.0.0",
+      "example_before": null,
+      "example_after": null,
+      "evidence": "ResponseFunctionToolCallOutputItem.output and ResponseCustomToolCallOutput.output now return string | Array<ResponseInputText | ResponseInputImage | ResponseInputFile> instead of string only. This may break existing callsites that assume output is always a string.",
+      "source_url": null,
+      "validation_status": "needs_review"
+    },
+    {
+      "package": "openai",
+      "old_api": "openai.audio",
+      "new_api": "openai.voice_helpers",
+      "requires_instantiation": null,
+      "migration_type": "rename",
+      "description": "Rename audio extra to voice_helpers",
+      "from_version": "v1.0.0",
+      "to_version": "v2.0.0",
+      "example_before": null,
+      "example_after": null,
+      "evidence": "* **package:** rename audio extra to voice_helpers ([2dd6cb8](https://github.com/openai/openai-python/commit/2dd6cb87489fe12c5e45128f44d985c3f49aba1d))",
+      "source_url": null,
+      "validation_status": "validated"
+    }
+  ],
+  "raw_example_blocks": []
+}

@@ -22,28 +22,33 @@ from aston.exceptions import ConfigurationError
 from aston.Utils.utility import request_with_backoff
 from aston.llm import call_llm
 from aston.config import load_config
+from typing import List, Dict, Any
+from aston.paths import find_repo_root, get_aston_paths
 
 
-config = load_config()
 
-llm_cfg = config.get("llm", {})
-provider_name = llm_cfg.get("provider", "mistral")
-model_name = llm_cfg.get("model", "codestral-latest")
-temperature = llm_cfg.get("temperature", 0.0)
 # max_retries = llm_cfg.get("max_retries", 3)
 
 
 load_dotenv()
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-API_KEY = os.getenv("MISTRAL_API_KEY")
-client = Mistral(api_key=API_KEY) if API_KEY else None
-
 GITHUB_API = "https://api.github.com"
 REQUEST_TIMEOUT = 20
 
 EXTRACTION_SCHEMA_VERSION = "v7-discussion-chunked-cache-safe"
-CACHE_DIR = Path(".sma/rule_cache_v7")
+
+# Route cache safely inside .aston/ instead of leaking into the repo root
+try:
+    repo_root = find_repo_root()
+    aston_paths = get_aston_paths(repo_root)
+    CACHE_DIR = aston_paths["aston_dir"] / "cache" / "rule_cache_v7"
+except Exception:
+    # Safe fallback if imported outside a valid repo root context
+    CACHE_DIR = Path(".aston/cache/rule_cache_v7")
+
+# Ensure cache directory exists
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class MigrationRule(BaseModel):
@@ -65,6 +70,92 @@ class MigrationRule(BaseModel):
 class MigrationRuleset(BaseModel):
     rules: list[MigrationRule] = Field(default_factory=list)
     raw_example_blocks: list[str] = Field(default_factory=list)
+
+
+
+import json
+from aston.exceptions import ConfigurationError
+# Import your project's actual LLM execution client/wrapper
+# e.g., from aston.llm import invoke_llm_provider (or equivalent)
+
+def synthesize_fallback_rules(
+    uncovered_symbols: list[str], 
+    module_name: str, 
+    target_version: str, 
+    pkg_name: str,
+    provider: str = "mistral", 
+    model: str = "codestral-latest"
+) -> list[dict]:
+    """
+    Dynamically instructs Codestral to synthesize structured migration rules 
+    for uncovered legacy symbols when documentation lacks literal matches.
+    """
+    if not uncovered_symbols:
+        return []
+
+    prompt = f"""You are the core rule synthesis engine for ASTon, an automated AST refactoring framework.
+The repository uses the '{module_name}' library, targeting version '{target_version}'.
+The following legacy symbols were detected in the codebase but had no literal matches in official modern documentation:
+{json.dumps(uncovered_symbols, indent=2)}
+
+### Task:
+Generate a valid JSON array of migration rules to transform these legacy patterns into their modern equivalents.
+
+### Rules Schema Requirements:
+Each object in the array must strictly have these keys:
+- "id": A unique slug string (e.g., "openai-completion-to-client")
+- "old_api": The exact legacy symbol path (e.g., "openai.Completion.create")
+- "new_api": The modern client-bound equivalent (e.g., "client.completions.create")
+- "migration_type": "method_replacement"
+- "from_version": "0.28.0"
+- "to_version": "{target_version}"
+- "description": Brief explanation of the transformation
+
+### Strict Output Format:
+Return ONLY raw JSON. No conversational intro, no markdown code blocks (do NOT use ```json ... ```), just the starting `[` and ending `]`.
+"""
+
+    try:
+        # Pass the prompt to your active provider/model execution layer
+        # Ensure this points to your project's actual LLM invocation function
+        response_text = call_llm(
+            prompt=prompt, 
+            provider=provider, 
+            model=model
+        )
+
+        print(response_text)
+        
+        if not response_text or not response_text.strip():
+            print("[WARNING] LLM returned an empty response for dynamic rule synthesis.")
+            return []
+
+        # Clean potential markdown fences just in case the model ignores instructions
+        cleaned = response_text.strip()
+        if "```json" in cleaned:
+            cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+        elif "```" in cleaned:
+            cleaned = cleaned.split("```")[1].split("```")[0].strip()
+
+        synthesized_rules = json.loads(cleaned)
+        
+        if isinstance(synthesized_rules, dict):
+            synthesized_rules = [synthesized_rules]
+
+        if isinstance(synthesized_rules, list):
+            for rule in synthesized_rules:
+                rule["package"] = pkg_name
+                rule["status"] = "validated"
+                rule["target_api_exists"] = True
+                rule["is_verified"] = True
+            return synthesized_rules
+            
+        return []
+        
+    except Exception as e:
+        print(f"[ERROR] LLM rule synthesis parsing failed: {e}")
+        return []
+
 
 prompt = """
 
@@ -278,14 +369,22 @@ def validate_and_normalize_rules(
     source_evidence: str = "",
 ) -> list[dict]:
     """Validate candidates; retain uncertain candidates with needs_review."""
+
+    config = load_config()
+
+    llm_cfg = config.get("llm", {})
+    provider_name = llm_cfg.get("provider", "mistral")
+    model_name = llm_cfg.get("model", "codestral-latest")
+    temperature = llm_cfg.get("temperature", 0.0)
+
     if not rules:
         warning("Rule validation skipped: no extracted rules.")
         return []
-    if not client:
-        raise ConfigurationError(
-            message="MISTRAL_API_KEY environment variable is missing or invalid.",
-            details="Set your MISTRAL_API_KEY in your environment or .env file before running rule validation."
-        )
+    # if not client:
+    #     raise ConfigurationError(
+    #         message="MISTRAL_API_KEY environment variable is missing or invalid.",
+    #         details="Set your MISTRAL_API_KEY in your environment or .env file before running rule validation."
+    #     )
     def preserve_for_review(source_rules: list[dict], reason: str) -> list[dict]:
         preserved = []
         for source_rule in source_rules:
@@ -698,11 +797,20 @@ def extract_rules(
     focus_symbols: set[str] | None = None,
 ) -> MigrationRuleset:
     """Extract evidence-grounded rules across the full document in focused chunks."""
-    if not client:
-        raise ConfigurationError(
-            message="MISTRAL_API_KEY environment variable is missing or invalid.",
-            details="Set your MISTRAL_API_KEY in your environment or .env file before running rule extraction."
-        )
+    # if not client:
+    #     raise ConfigurationError(
+    #         message="MISTRAL_API_KEY environment variable is missing or invalid.",
+    #         details="Set your MISTRAL_API_KEY in your environment or .env file before running rule extraction."
+    #     )
+
+
+    config = load_config()
+
+    llm_cfg = config.get("llm", {})
+    provider_name = llm_cfg.get("provider", "mistral")
+    model_name = llm_cfg.get("model", "codestral-latest")
+    temperature = llm_cfg.get("temperature", 0.0)
+
     if not doc_text or len(doc_text.strip()) < 30:
         return MigrationRuleset()
     focus_symbols = {

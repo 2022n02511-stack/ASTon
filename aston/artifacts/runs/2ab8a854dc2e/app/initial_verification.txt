@@ -1,0 +1,43 @@
+Status: VerificationResult.MIGRATION_ERROR
+Error type: ImportError
+Error message: Traceback (most recent call last):
+  File "/app/run_target.py", line 15, in <module>
+    runpy.run_path(str(target), run_name="__main__")
+  File "<frozen runpy>", line 291, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "/app/repo/.app.aston_candidate_2ab8a854dc2e.py", line 6, in <module>
+    import tiktoken
+ModuleNotFoundError: No module named 'tiktoken'
+Traceback (most recent call last):
+  File "/app/run_target.py", line 15, in <module>
+    runpy.run_path(str(target), run_name="__main__")
+  File "<frozen runpy>", line 291, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "/app/repo/.app.aston_candidate_2ab8a854dc2e.py", line 6, in <module>
+    import tiktoken
+ModuleNotFoundError: No module named 'tiktoken'
+
+========== STDOUT ==========
+
+
+========== STDERR ==========
+Traceback (most recent call last):
+  File "/app/run_target.py", line 15, in <module>
+    runpy.run_path(str(target), run_name="__main__")
+  File "<frozen runpy>", line 291, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "/app/repo/.app.aston_candidate_2ab8a854dc2e.py", line 6, in <module>
+    import tiktoken
+ModuleNotFoundError: No module named 'tiktoken'
+Traceback (most recent call last):
+  File "/app/run_target.py", line 15, in <module>
+    runpy.run_path(str(target), run_name="__main__")
+  File "<frozen runpy>", line 291, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "/app/repo/.app.aston_candidate_2ab8a854dc2e.py", line 6, in <module>
+    import tiktoken
+ModuleNotFoundError: No module named 'tiktoken'

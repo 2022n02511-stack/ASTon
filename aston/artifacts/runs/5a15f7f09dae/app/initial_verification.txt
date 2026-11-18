@@ -1,0 +1,109 @@
+Status: VerificationResult.ENVIRONMENT_ERROR
+Error type: DockerBuildError
+Error message: #0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 655B done
+#1 DONE 0.1s
+
+#2 [internal] load metadata for docker.io/library/python:3.11-slim
+#2 DONE 0.1s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.1s
+
+#4 [internal] load build context
+#4 transferring context: 64.12kB done
+#4 DONE 0.2s
+
+#5 [stage-0 1/6] FROM docker.io/library/python:3.11-slim@sha256:bab1b7ef4b450c81002278d035eff85ebe394ae94df904f7a3ba14f7e16e487b
+#5 resolve docker.io/library/python:3.11-slim@sha256:bab1b7ef4b450c81002278d035eff85ebe394ae94df904f7a3ba14f7e16e487b 0.1s done
+#5 DONE 0.1s
+
+#6 [stage-0 2/6] WORKDIR /app
+#6 CACHED
+
+#7 [stage-0 3/6] COPY requirements.txt /app/requirements.txt
+#7 CACHED
+
+#8 [stage-0 4/6] RUN --mount=type=cache,id=aston-pip-cache,target=/root/.cache/pip     python -m pip install     --cache-dir=/root/.cache/pip     --default-timeout=120     --retries 3     -r /app/requirements.txt
+#8 CACHED
+
+#9 [stage-0 5/6] COPY repo/ /app/repo/
+#9 DONE 0.3s
+
+#10 [stage-0 6/6] COPY run_target.py /app/run_target.py
+#10 DONE 0.2s
+
+#11 exporting to image
+#11 exporting layers
+#11 exporting layers 0.4s done
+#11 exporting manifest sha256:e43063d816ec570ef67cec064d24d353c2f5a9bd5e9ac182684f6e06da3081cc 0.0s done
+#11 exporting config sha256:ac8a9ab525358cfae4e076351e74226f1eac6800178afb6863a22545e1f03149 0.0s done
+#11 exporting attestation manifest sha256:906d7891db45dbe996e230d7bbf11df55a3d7dea8dcc682f9cf1039ed25ea186
+#11 exporting attestation manifest sha256:906d7891db45dbe996e230d7bbf11df55a3d7dea8dcc682f9cf1039ed25ea186 0.1s done
+#11 exporting manifest list sha256:dc75458b769087f950b32199e1ab047ea47a674733fde0b8120a1ae31f5633b0 0.0s done
+#11 naming to docker.io/library/aston-verify-8668c123f7aa:latest 0.0s done
+#11 unpacking to docker.io/library/aston-verify-8668c123f7aa:latest
+#11 unpacking to docker.io/library/aston-verify-8668c123f7aa:latest 0.1s done
+#11 DONE 0.8s
+
+ [33m1 warning found (use docker --debug to expand):
+[0m - SecretsUsedInArgOrEnv: Do not use ARG or ENV instructions for sensitive data (ENV "OPENAI_API_KEY") (line 8)
+
+========== STDOUT ==========
+
+
+========== STDERR ==========
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 655B done
+#1 DONE 0.1s
+
+#2 [internal] load metadata for docker.io/library/python:3.11-slim
+#2 DONE 0.1s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.1s
+
+#4 [internal] load build context
+#4 transferring context: 64.12kB done
+#4 DONE 0.2s
+
+#5 [stage-0 1/6] FROM docker.io/library/python:3.11-slim@sha256:bab1b7ef4b450c81002278d035eff85ebe394ae94df904f7a3ba14f7e16e487b
+#5 resolve docker.io/library/python:3.11-slim@sha256:bab1b7ef4b450c81002278d035eff85ebe394ae94df904f7a3ba14f7e16e487b 0.1s done
+#5 DONE 0.1s
+
+#6 [stage-0 2/6] WORKDIR /app
+#6 CACHED
+
+#7 [stage-0 3/6] COPY requirements.txt /app/requirements.txt
+#7 CACHED
+
+#8 [stage-0 4/6] RUN --mount=type=cache,id=aston-pip-cache,target=/root/.cache/pip     python -m pip install     --cache-dir=/root/.cache/pip     --default-timeout=120     --retries 3     -r /app/requirements.txt
+#8 CACHED
+
+#9 [stage-0 5/6] COPY repo/ /app/repo/
+#9 DONE 0.3s
+
+#10 [stage-0 6/6] COPY run_target.py /app/run_target.py
+#10 DONE 0.2s
+
+#11 exporting to image
+#11 exporting layers
+#11 exporting layers 0.4s done
+#11 exporting manifest sha256:e43063d816ec570ef67cec064d24d353c2f5a9bd5e9ac182684f6e06da3081cc 0.0s done
+#11 exporting config sha256:ac8a9ab525358cfae4e076351e74226f1eac6800178afb6863a22545e1f03149 0.0s done
+#11 exporting attestation manifest sha256:906d7891db45dbe996e230d7bbf11df55a3d7dea8dcc682f9cf1039ed25ea186
+#11 exporting attestation manifest sha256:906d7891db45dbe996e230d7bbf11df55a3d7dea8dcc682f9cf1039ed25ea186 0.1s done
+#11 exporting manifest list sha256:dc75458b769087f950b32199e1ab047ea47a674733fde0b8120a1ae31f5633b0 0.0s done
+#11 naming to docker.io/library/aston-verify-8668c123f7aa:latest 0.0s done
+#11 unpacking to docker.io/library/aston-verify-8668c123f7aa:latest
+#11 unpacking to docker.io/library/aston-verify-8668c123f7aa:latest 0.1s done
+#11 DONE 0.8s
+
+ [33m1 warning found (use docker --debug to expand):
+[0m - SecretsUsedInArgOrEnv: Do not use ARG or ENV instructions for sensitive data (ENV "OPENAI_API_KEY") (line 8)

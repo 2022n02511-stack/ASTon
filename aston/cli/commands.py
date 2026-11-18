@@ -7,12 +7,121 @@ import yaml
 import sys
 from pathlib import Path
 from aston.llm import call_llm
+from aston.paths import get_aston_paths, find_repo_root
+import difflib
+
+def handle_status(repo_path: Path | str | None = None):
+    """List all staged files pending review or PR creation."""
+    repo_root = Path(repo_path).expanduser().resolve() if repo_path else find_repo_root()
+    paths = get_aston_paths(repo_root)
+    staging_dir = paths["staging"]
+
+    if not staging_dir.is_dir() or not any(staging_dir.iterdir()):
+        info("No changes staged. Run 'aston check --run' to begin a migration.")
+        return
+
+    print("\n==================================================")
+    print("--- ASTon Staged Migration Workspace Status ---")
+    print("==================================================")
+    
+    staged_files = [f for f in staging_dir.rglob("*.py") if f.is_file()]
+    for file_path in staged_files:
+        rel = file_path.relative_to(staging_dir)
+        rich_success(f"  staged:   {rel}")
+    
+    print("--------------------------------------------------")
+    info(f"Total staged files: {len(staged_files)}")
+    info("Run 'aston diff' to inspect changes, or 'aston pr' to push.")
 
 
-def handle_init():
-    """Execute `aston init`"""
+def handle_diff(repo_path: Path | str | None = None):
+    """Compare working tree files against their staged migrated counterparts."""
+    repo_root = Path(repo_path).expanduser().resolve() if repo_path else find_repo_root()
+    paths = get_aston_paths(repo_root)
+    staging_dir = paths["staging"]
+
+    if not staging_dir.is_dir() or not any(staging_dir.iterdir()):
+        info("No staged files found to diff.")
+        return
+
+    staged_files = [f for f in staging_dir.rglob("*.py") if f.is_file()]
+    
+    for staged_path in staged_files:
+        rel = staged_path.relative_to(staging_dir)
+        original_path = repo_root / rel
+
+        if not original_path.is_file():
+            warning(f"[NEW] {rel} (Staged file does not exist in working tree yet)")
+            continue
+
+        original_code = original_path.read_text(encoding="utf-8").splitlines()
+        staged_code = staged_path.read_text(encoding="utf-8").splitlines()
+
+        diff = list(difflib.unified_diff(
+            original_code,
+            staged_code,
+            fromfile=f"a/{rel}",
+            tofile=f"b/{rel}",
+            lineterm=""
+        ))
+
+        if diff:
+            print(f"\n--- Diff for {rel} ---")
+            for line in diff:
+                if line.startswith("+") and not line.startswith("+++"):
+                    print(f"\033[32m{line}\033[0m")  # Green for additions
+                elif line.startswith("-") and not line.startswith("---"):
+                    print(f"\033[31m{line}\033[0m")  # Red for deletions
+                else:
+                    print(line)
+
+
+def handle_clean(repo_path: Path | str | None = None):
+    """Wipe out staging and temporary runtime artifacts."""
+    repo_root = Path(repo_path).expanduser().resolve() if repo_path else find_repo_root()
+    paths = get_aston_paths(repo_root)
+    
+    aston_dir = paths["aston_dir"]
+    if aston_dir.is_dir():
+        shutil.rmtree(paths["staging"], ignore_errors=True)
+        shutil.rmtree(paths["runs"], ignore_errors=True)
+        paths["staging"].mkdir(parents=True, exist_ok=True)
+        paths["runs"].mkdir(parents=True, exist_ok=True)
+        rich_success("ASTon staging area and temporary run artifacts cleaned successfully.")
+    else:
+        info("No ASTon workspace found to clean.")
+
+
+def handle_init(repo_path: Path | str | None = None):
+    """Execute `aston init` (Git-like workspace and configuration setup)."""
     info("Initializing ASTon configuration environment...")
+    
+    # 1. Save default configuration (keeping your existing setup)
     save_default_config()
+    
+    # 2. Bootstrap the hidden .aston/ workspace and subdirectories
+    resolved_root = Path(repo_path).expanduser().resolve() if repo_path else Path.cwd().resolve()
+    paths = get_aston_paths(resolved_root)
+    
+    paths["staging"].mkdir(parents=True, exist_ok=True)
+    paths["runs"].mkdir(parents=True, exist_ok=True)
+    paths["reports"].mkdir(parents=True, exist_ok=True)
+    
+    # 3. Automatically protect the workspace via .gitignore
+    gitignore_path = resolved_root / ".gitignore"
+    ignore_entry = ".aston/"
+    
+    if gitignore_path.is_file():
+        content = gitignore_path.read_text(encoding="utf-8", errors="replace")
+        if ignore_entry not in content:
+            with open(gitignore_path, "a", encoding="utf-8") as f:
+                f.write(f"\n# ASTon AI Migration Workspace\n{ignore_entry}\n")
+            info("Added .aston/ to existing .gitignore")
+    else:
+        gitignore_path.write_text(f"# ASTon AI Migration Workspace\n{ignore_entry}\n", encoding="utf-8")
+        info("Created .gitignore and added .aston/")
+    
+    rich_success(f"Workspace initialized at: {paths['aston_dir'].relative_to(resolved_root)}")
     rich_success(f"Logs directory ready at: {LOGS_DIR}")
     info("Setup complete! You are ready to run migrations.")
 
@@ -116,7 +225,7 @@ def check_llm_connectivity(provider: str, model: str) -> tuple[bool, str]:
     except Exception as exc:
         return False, f"Connectivity check failed: {exc}"
 
-def handle_doctor(test_llm: bool = False, repo_path: str = "."):
+def handle_doctor(test_llm: bool = False, repo_path: Path | str | None = None):
     """Runs all diagnostic checks for ASTon."""
     info("Running ASTon Doctor Diagnostics...\n")
     
@@ -157,9 +266,9 @@ def handle_doctor(test_llm: bool = False, repo_path: str = "."):
         checks.append((f"Credentials [{p.capitalize()}]", ok_cred, msg_cred))
 
     # 7. Repository Accessibility
-    target_repo = Path(repo_path).expanduser().resolve()
-    is_git_repo = (target_repo / ".git").exists()
-    checks.append(("Repository Accessibility", is_git_repo, f"Path '{target_repo}' is {'' if is_git_repo else 'not '}a valid git repository"))
+    resolved_root = Path(repo_path).expanduser().resolve() if repo_path else find_repo_root()
+    is_git_repo = (resolved_root / ".git").exists()
+    checks.append(("Repository Accessibility", is_git_repo, f"Path '{resolved_root}' is {'' if is_git_repo else 'not '}a valid git repository"))
 
     # 8. Optional LLM Connectivity Test
     if test_llm:

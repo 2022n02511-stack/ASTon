@@ -13,14 +13,8 @@ from uuid import uuid4
 from aston.cli.console import rich_success, error, warning, info
 from aston.exceptions import ConfigurationError, MigrationError, VerificationError
 from aston.config import load_config
+from aston.artifacts.save_attempt import save_full_repo_verification_result
 
-config = load_config()
-mig_cfg = config.get("migration", {})
-
-per_file_retries = mig_cfg.get("per_file_repair_retries", 3)
-sweep_passes = mig_cfg.get("failed_files_sweep_passes", 2)
-docker_file_timeout = mig_cfg.get("docker_file_timeout_seconds", 300)
-docker_repo_timeout = mig_cfg.get("docker_repo_timeout_seconds", 300)
 
 
 def discover_python_files(root: Path) -> list[Path]:
@@ -30,8 +24,6 @@ def discover_python_files(root: Path) -> list[Path]:
         ".venv",
         "venv",
         "__pycache__",
-        "succ_migrations",
-        "final_reports",
         "reports",
         "build",
         "dist",
@@ -174,18 +166,29 @@ def repo_map(repo_path: str) -> dict:
 def migrate_repo(path: str):
     print_aston_banner()
 
+    config = load_config()
+    mig_cfg = config.get("migration", {})
+
+    per_file_retries = mig_cfg.get("per_file_repair_retries", 3)
+    sweep_passes = mig_cfg.get("failed_files_sweep_passes", 2)
+    docker_file_timeout = mig_cfg.get("docker_file_timeout_seconds", 300)
+    docker_repo_timeout = mig_cfg.get("docker_repo_timeout_seconds", 300)
+
 
 
     rel_path = Path(path)
     root = rel_path.expanduser().resolve()
 
     # 1. Generate and save repo index
+    # 1. Generate and save repo index inside .aston/
     repo_index = repo_map(path)
+    aston_dir = root / ".aston"
+    aston_dir.mkdir(parents=True, exist_ok=True)
 
-    with open('repo_index.json', 'w', encoding='utf-8') as f:
-        json.dump(repo_index, f, indent=3)
+    repo_index_path = aston_dir / "repo_index.json"
+    repo_index_path.write_text(json.dumps(repo_index, indent=3), encoding="utf-8")
 
-    # 2. Build migrations dictionary
+    # 2. Build and save migrations dictionary inside .aston/
     migrations = {}
     file_contexts = {}
 
@@ -200,17 +203,14 @@ def migrate_repo(path: str):
                 target_version, 
                 repo_index["symbols"]
             )
-            # info("composed_rules: ", composed_rules)
-            # print(raw_code_examples)
-            
             migrations[module] = {
                 'composed_rules': composed_rules,
                 'doc_text': doc_text,
                 'raw_code_examples': raw_code_examples
             }
 
-    with open('migrations.json', 'w', encoding='utf-8') as f:
-        json.dump(migrations, f, indent=3)
+    migrations_path = aston_dir / "migrations.json"
+    migrations_path.write_text(json.dumps(migrations, indent=3), encoding="utf-8")
 
     # 3. Setup temporary requirements.txt
     
@@ -218,7 +218,14 @@ def migrate_repo(path: str):
     root = Path(root).expanduser().resolve()
 
     original_req_path = root / "requirements.txt"
-    temp_req_path = root / "temp_requirements.txt"
+    
+    # Route temporary requirements inside .aston/runs/ instead of the repo root
+    aston_dir = root / ".aston"
+    aston_dir.mkdir(parents=True, exist_ok=True)
+    runs_dir = aston_dir / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    
+    temp_req_path = runs_dir / "temp_requirements.txt"
 
     if not original_req_path.is_file():
         raise ConfigurationError(
@@ -265,16 +272,17 @@ def migrate_repo(path: str):
 
     # Save target requirements alongside successful migration artifacts.
     # Keep the temporary requirements file for Docker verification for now.
-    success_root = Path(__file__).resolve().parents[1] / "succ_migrations"
-    success_root.mkdir(parents=True, exist_ok=True)
+    # Save target requirements alongside staged migration artifacts.
+    staging_root = root / ".aston" / "staging"
+    staging_root.mkdir(parents=True, exist_ok=True)
 
-    success_req_path = success_root / "requirements.txt"
+    success_req_path = staging_root / "requirements.txt"
     success_req_path.write_text(
         temp_req_path.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
 
-    rich_success(f"Target requirements saved to: {success_req_path}")
+    rich_success(f"Target requirements saved to: {success_req_path.relative_to(root)}")
 
     info(f"Original requirements: {original_req_path}")
     info(f"Temporary requirements: {temp_req_path}")
@@ -288,6 +296,10 @@ def migrate_repo(path: str):
 
     passed_files = []
     failed_files = []
+
+    run_id = uuid4().hex[:8]
+    run_dir = root / ".aston" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     for py_file in py_files:
         relative_path = str(py_file.relative_to(root))
@@ -311,7 +323,8 @@ def migrate_repo(path: str):
             passed_files=passed_files,
             failed_files=failed_files,
             max_tries=per_file_retries,
-            docker_file_time=docker_file_timeout
+            docker_file_time=docker_file_timeout,
+            run_dir=run_dir
         )
 
         if context_data:
@@ -358,7 +371,7 @@ def migrate_repo(path: str):
             f"Migration completed with partial failures. "
             f"{len(failed_files)} file(s) failed after repair attempts."
         )
-        info("Detailed debugging artifacts remain preserved inaston/artifacts/runs/.")
+        info("Detailed debugging artifacts remain preserved in .aston/runs/.")
         info("Proceeding with full-repo verification and PR creation for successfully migrated files...")
     else:
         rich_success("All files migrated successfully!")
@@ -375,7 +388,7 @@ def migrate_repo(path: str):
     print("--- [Stage 6] Repo-Wide Integration Verification ---")
     print("==================================================")
 
-    migration_root = Path(__file__).resolve().parents[1] / "succ_migrations"
+    migration_root = root / ".aston" / "staging"
 
     test_result = verify_full_repo_in_docker(
         str(root),
@@ -383,6 +396,8 @@ def migrate_repo(path: str):
         migration_root / "requirements.txt",
         timeout=docker_repo_timeout
     )
+
+    save_full_repo_verification_result(run_dir, test_result)
 
     if test_result.get("status") == "PASS":
         temp_req_path.unlink(missing_ok=True)

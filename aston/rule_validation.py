@@ -262,9 +262,9 @@ def probe_api(module, api):
         return "unverifiable", "No usable candidate API"
     api = api.strip()
 
-    # Generic probing cannot instantiate arbitrary client objects safely.
+    # Handle client-bound instance methods by checking the rest of the attribute path
     if api.startswith("client."):
-        return "unverifiable", "Instance-based API requires a package-specific adapter"
+        api = api[len("client."):]  # e.g., "client.completions.create" -> "completions.create"
 
     if api == import_name:
         path = ""
@@ -351,8 +351,7 @@ except Exception as exc:
         command = [
             "docker", "run", "--rm",
             "-v", f"{req_path.parent}:/project:ro",
-            "-v", f"{temp_dir}:/work:ro",
-            "-w", "/work",
+            "-v", f"{temp_dir}:/work",  # Removed :ro so container can write/execute cleanly            "-w", "/work",
             python_image,
             "python", "/work/validate.py",
             f"/project/{req_path.name}",

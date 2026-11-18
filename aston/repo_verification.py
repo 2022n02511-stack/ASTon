@@ -5,6 +5,31 @@ import shutil
 import tempfile
 
 
+def _is_network_failure(output: str) -> bool:
+    """Return True only when output contains recognisable network failures."""
+
+    output = output.lower()
+
+    network_markers = (
+        "temporary failure in name resolution",
+        "could not resolve host",
+        "name or service not known",
+        "name resolution failed",
+        "network is unreachable",
+        "no route to host",
+        "failed to establish a new connection",
+        "connection timed out",
+        "connect timeout",
+        "read timeout",
+        "max retries exceeded with url",
+        "connectionerror",
+        "name resolution error",
+        "network is down",
+    )
+
+    return any(marker in output for marker in network_markers)
+
+
 def verify_full_repo_in_docker(
     repo_root: str,
     migrated_files_path: str | Path,
@@ -14,7 +39,7 @@ def verify_full_repo_in_docker(
     timeout: int = 300,
     test_command: str = "python -m pytest -q",
 ) -> dict:
-    """Verify the migrated repository inside an isolated Docker container."""
+    """Verify the migrated repository inside an isolated Docker container with offline-first network fallback."""
 
     repo_path = Path(repo_root).resolve()
     migration_path = Path(migrated_files_path).resolve()
@@ -175,35 +200,80 @@ echo "--- [Verification] Running test suite ---"
 echo "ASTON_VERIFICATION_PASSED"
 """
 
-            docker_cmd = [
-                "docker", "run", "--rm",
-                "-v", f"{verification_repo}:/app:ro,Z",
-                "-v", "aston-pip-cache:/root/.cache/pip",
-                "--workdir", "/app",
-                python_image,
-                "sh", "-c", script,
-            ]
+            network_modes = ["none", "bridge"]
+            attempts = []
+            result = None
+            network_mode = None
 
-            result = subprocess.run(
-                docker_cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
+            for mode in network_modes:
+
+                docker_cmd = [
+                    "docker", "run", "--rm",
+                    "--network", mode,
+                    "-v", f"{verification_repo}:/app:ro,Z",
+                    "-v", "aston-pip-cache:/root/.cache/pip",
+                    "--workdir", "/app",
+                    python_image,
+                    "sh", "-c", script,
+                ]
+
+                result = subprocess.run(
+                    docker_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
+
+                output = result.stdout + "\n" + result.stderr
+
+                attempts.append({
+                    "network_mode": mode,
+                    "exit_code": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                })
+
+                network_mode = mode
+
+                # Successful verification: stop immediately.
+                if (
+                    result.returncode == 0
+                    and "ASTON_VERIFICATION_PASSED" in output
+                ):
+                    break
+
+                # Only retry when offline execution clearly failed
+                # because of network connectivity.
+                if mode == "none" and _is_network_failure(output):
+                    continue
+
+                # Do not retry migration, syntax, test, or other failures.
+                break
 
             output = result.stdout + "\n" + result.stderr
 
-            if result.returncode == 0 and "ASTON_VERIFICATION_PASSED" in output:
+            if (
+                result.returncode == 0
+                and "ASTON_VERIFICATION_PASSED" in output
+            ):
                 status = "PASS"
+
             elif "ASTON_SETUP_FAILED" in output:
                 status = "SETUP_ERROR"
+
             elif "ASTON_PYTEST_SETUP_FAILED" in output:
                 status = "SETUP_ERROR"
+
             elif "ASTON_SYNTAX_FAILED" in output:
                 status = "SYNTAX_ERROR"
+
             elif "ASTON_TESTS_FAILED" in output:
                 status = "TEST_FAILED"
+
+            elif _is_network_failure(output):
+                status = "NETWORK_ERROR"
+
             else:
                 status = "DOCKER_ERROR"
 
@@ -213,6 +283,8 @@ echo "ASTON_VERIFICATION_PASSED"
                 "exit_code": result.returncode,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
+                "network_mode": network_mode,
+                "attempts": attempts,
             }
 
     except subprocess.TimeoutExpired as exc:
