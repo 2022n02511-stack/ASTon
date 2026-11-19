@@ -195,12 +195,6 @@ def code_patcher(
 ):
     """Stage 3 migration and Stage 5 verification-guided repair."""
 
-    # if not client:
-    #     raise ConfigurationError(
-    #         message="MISTRAL_API_KEY environment variable is missing or invalid.",
-    #         details="Set your MISTRAL_API_KEY in your environment or .env file before running code patching."
-    #     )
-
 
     config = load_config()
 
