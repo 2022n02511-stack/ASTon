@@ -1,8 +1,10 @@
 import subprocess
 from pathlib import Path
-import shlex
 import shutil
 import tempfile
+import threading
+import time
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 
 def _is_network_failure(output: str) -> bool:
@@ -28,6 +30,81 @@ def _is_network_failure(output: str) -> bool:
     )
 
     return any(marker in output for marker in network_markers)
+
+
+def _run_docker_with_progress(
+    docker_cmd: list[str],
+    timeout: int,
+    description: str,
+) -> tuple[int, str, str]:
+    """Run a docker command silently with a Rich progress bar while capturing stdout and stderr."""
+    process = subprocess.Popen(
+        docker_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+
+    def _read_stream(pipe, sink: list[str]) -> None:
+        if pipe is None:
+            return
+        try:
+            for chunk in iter(lambda: pipe.read(4096), ""):
+                sink.append(chunk)
+        finally:
+            pipe.close()
+
+    t_out = threading.Thread(target=_read_stream, args=(process.stdout, stdout_chunks), daemon=True)
+    t_err = threading.Thread(target=_read_stream, args=(process.stderr, stderr_chunks), daemon=True)
+    t_out.start()
+    t_err.start()
+
+    start_time = time.monotonic()
+    total_timeout = max(1, timeout)
+
+    with Progress(
+        SpinnerColumn(style="green"),
+        TextColumn(f"[bold cyan]{description}[/bold cyan]"),
+        BarColumn(),
+        TextColumn("{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        transient=True,
+    ) as progress:
+        task_id = progress.add_task("verify", total=total_timeout)
+
+        while process.poll() is None:
+            elapsed = time.monotonic() - start_time
+            if elapsed >= total_timeout:
+                process.kill()
+                t_out.join()
+                t_err.join()
+                process.wait()
+                raise subprocess.TimeoutExpired(
+                    cmd=docker_cmd,
+                    timeout=timeout,
+                    output="".join(stdout_chunks),
+                    stderr="".join(stderr_chunks) or "Repository verification timed out.",
+                )
+
+            progress.update(task_id, completed=min(total_timeout, elapsed))
+            time.sleep(0.1)
+
+    t_out.join()
+    t_err.join()
+    returncode = process.returncode
+    return returncode, "".join(stdout_chunks), "".join(stderr_chunks)
+
+
+def _print_failure_summary(status: str, returncode: int | None, stdout: str, stderr: str) -> None:
+    """Surface a concise failure summary on the terminal without dumping full logs."""
+    print(f"[ERROR] Full-repo verification failed (status={status}, exit_code={returncode}).")
+    combined = (stderr or stdout or "").strip()
+    if combined:
+        tail = "\n".join(combined.splitlines()[-25:])
+        print(tail)
 
 
 def verify_full_repo_in_docker(
@@ -202,7 +279,9 @@ echo "ASTON_VERIFICATION_PASSED"
 
             network_modes = ["none", "bridge"]
             attempts = []
-            result = None
+            returncode = 1
+            stdout = ""
+            stderr = ""
             network_mode = None
 
             for mode in network_modes:
@@ -217,28 +296,26 @@ echo "ASTON_VERIFICATION_PASSED"
                     "sh", "-c", script,
                 ]
 
-                result = subprocess.run(
-                    docker_cmd,
-                    capture_output=True,
-                    text=True,
+                returncode, stdout, stderr = _run_docker_with_progress(
+                    docker_cmd=docker_cmd,
                     timeout=timeout,
-                    check=False,
+                    description=f"Verifying repository in Docker ({mode})",
                 )
 
-                output = result.stdout + "\n" + result.stderr
+                output = stdout + "\n" + stderr
 
                 attempts.append({
                     "network_mode": mode,
-                    "exit_code": result.returncode,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
+                    "exit_code": returncode,
+                    "stdout": stdout,
+                    "stderr": stderr,
                 })
 
                 network_mode = mode
 
                 # Successful verification: stop immediately.
                 if (
-                    result.returncode == 0
+                    returncode == 0
                     and "ASTON_VERIFICATION_PASSED" in output
                 ):
                     break
@@ -251,10 +328,10 @@ echo "ASTON_VERIFICATION_PASSED"
                 # Do not retry migration, syntax, test, or other failures.
                 break
 
-            output = result.stdout + "\n" + result.stderr
+            output = stdout + "\n" + stderr
 
             if (
-                result.returncode == 0
+                returncode == 0
                 and "ASTON_VERIFICATION_PASSED" in output
             ):
                 status = "PASS"
@@ -277,12 +354,15 @@ echo "ASTON_VERIFICATION_PASSED"
             else:
                 status = "DOCKER_ERROR"
 
+            if status != "PASS":
+                _print_failure_summary(status, returncode, stdout, stderr)
+
             return {
                 "status": status,
                 "success": status == "PASS",
-                "exit_code": result.returncode,
-                "stdout": result.stdout,
-                "stderr": result.stderr,
+                "exit_code": returncode,
+                "stdout": stdout,
+                "stderr": stderr,
                 "network_mode": network_mode,
                 "attempts": attempts,
             }
@@ -297,6 +377,8 @@ echo "ASTON_VERIFICATION_PASSED"
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", errors="replace")
 
+        _print_failure_summary("TIMEOUT", None, stdout, stderr)
+
         return {
             "status": "TIMEOUT",
             "success": False,
@@ -306,6 +388,7 @@ echo "ASTON_VERIFICATION_PASSED"
         }
 
     except OSError as exc:
+        _print_failure_summary("DOCKER_ERROR", None, "", str(exc))
         return {
             "status": "DOCKER_ERROR",
             "success": False,

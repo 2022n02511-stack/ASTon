@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from aston.cli_ui.rich import console
 
 
 class VerificationResult(str, Enum):
@@ -38,7 +40,7 @@ class VerificationOutput:
 
 
 def _run_streaming_build(command: list[str], timeout: int) -> tuple[int, str, str, bool]:
-    '''Run docker build with live output and a hard timeout.'''
+    '''Run docker build silently with a Rich progress bar and a hard timeout.'''
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -65,39 +67,54 @@ def _run_streaming_build(command: list[str], timeout: int) -> tuple[int, str, st
     for thread in threads:
         thread.start()
 
-    deadline = time.monotonic() + max(1, timeout)
+    start_time = time.monotonic()
+    total_timeout = max(1, timeout)
+    deadline = start_time + total_timeout
     finished = 0
     timed_out = False
 
-    while finished < 2:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0 and process.poll() is None and not timed_out:
-            timed_out = True
-            try:
-                if os.name == "posix":
-                    os.killpg(process.pid, signal.SIGTERM)
-                else:
-                    process.terminate()
-                process.wait(timeout=5)
-            except (subprocess.TimeoutExpired, ProcessLookupError):
+    with Progress(
+        SpinnerColumn(style="green"),
+        TextColumn("[bold cyan]Building Docker verification image[/bold cyan]"),
+        BarColumn(),
+        TextColumn("{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        task_id = progress.add_task("build", total=total_timeout)
+
+        while finished < 2:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 and process.poll() is None and not timed_out:
+                timed_out = True
                 try:
                     if os.name == "posix":
-                        os.killpg(process.pid, signal.SIGKILL)
+                        os.killpg(process.pid, signal.SIGTERM)
                     else:
-                        process.kill()
-                except ProcessLookupError:
-                    pass
-                process.wait()
+                        process.terminate()
+                    process.wait(timeout=5)
+                except (subprocess.TimeoutExpired, ProcessLookupError):
+                    try:
+                        if os.name == "posix":
+                            os.killpg(process.pid, signal.SIGKILL)
+                        else:
+                            process.kill()
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
 
-        try:
-            name, line = events.get(timeout=0.1 if timed_out else max(0.01, remaining))
-        except queue.Empty:
-            continue
-        if line is None:
-            finished += 1
-        else:
-            outputs[name].append(line)
-            print(line, end="", flush=True)
+            try:
+                name, line = events.get(timeout=0.1 if timed_out else max(0.01, remaining))
+            except queue.Empty:
+                progress.update(task_id, completed=min(total_timeout, time.monotonic() - start_time))
+                continue
+
+            if line is None:
+                finished += 1
+            else:
+                outputs[name].append(line)
+                progress.update(task_id, completed=min(total_timeout, time.monotonic() - start_time))
 
     for thread in threads:
         thread.join()
