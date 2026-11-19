@@ -17,6 +17,7 @@ from aston.cli.commands import (
 )
 from aston.config import load_config, set_runtime_config
 from aston.ledger import log_notification, show_notifications
+from aston.Utils.guard import _has_completed_migration
 
 
 def main():
@@ -111,6 +112,11 @@ def main():
         "--run", 
         action="store_true", 
         help="Execute migration if breaking changes are found"
+    )
+    check_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-run migration even if a completed migration already exists in .aston",
     )
     check_parser.add_argument(
         "--path",
@@ -292,6 +298,11 @@ def main():
             })
 
             if args.run:
+                if not args.force and _has_completed_migration(repo_path):
+                    warning("An existing migration was found in .aston.")
+                    info("Run `aston clean` first to clear previous migration artifacts and start fresh.")
+                    return
+
                 info("Checking git workspace status...")
                 verify_clean_git_workspace(repo_path)
 

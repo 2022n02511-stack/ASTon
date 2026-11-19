@@ -14,6 +14,7 @@ from aston.cli.console import rich_success, error, warning, info
 from aston.exceptions import ConfigurationError, MigrationError, VerificationError
 from aston.config import load_config
 from aston.artifacts.save_attempt import save_full_repo_verification_result
+from aston.Utils.guard import _has_completed_migration
 
 
 
@@ -51,6 +52,7 @@ def discover_python_files(root: Path) -> list[Path]:
 
 
 def repo_map(repo_path: str) -> dict:
+
     rel_path = Path(repo_path)
     root = rel_path.expanduser().resolve()
 
