@@ -5,12 +5,16 @@ migration rule is semantically correct.
 """
 
 from __future__ import annotations
+
 import json
+import logging
 import subprocess
 import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _mark_unprobed(rule: dict[str, Any], reason: str) -> dict[str, Any]:
@@ -66,6 +70,13 @@ def validate_all_rules(
     groups: dict[tuple[str, str], list[tuple[int, dict[str, Any]]]] = defaultdict(list)
     result_by_index: dict[int, dict[str, Any]] = {}
 
+    logger.debug(
+        "Grouping %d rule(s) for target validation (req_file=%s, image=%s)",
+        len(all_rules),
+        req_path,
+        python_image,
+    )
+
     for index, original in enumerate(all_rules):
         rule = dict(original)
         # Keep the original documentation/rule assessment separate from the
@@ -81,6 +92,7 @@ def validate_all_rules(
 
         package = rule.get("package")
         if not package:
+            logger.debug("Rule at index %d has no package identifier; marking unprobed", index)
             result_by_index[index] = _mark_unprobed(
                 rule, "Rule has no package identifier"
             )
@@ -88,6 +100,11 @@ def validate_all_rules(
 
         target_version = all_target_versions.get(package)
         if not target_version:
+            logger.debug(
+                "No target version configured for package %s (rule index %d); marking unprobed",
+                package,
+                index,
+            )
             result_by_index[index] = _mark_unprobed(
                 rule, f"No target version configured for import package {package}"
             )
@@ -96,6 +113,12 @@ def validate_all_rules(
         groups[(package, str(target_version))].append((index, rule))
 
     for (package, target_version), indexed_rules in groups.items():
+        logger.info(
+            "Validating %d rule(s) for %s==%s in Docker",
+            len(indexed_rules),
+            package,
+            target_version,
+        )
         validated = validate_rules_against_target(
             rules=[rule for _, rule in indexed_rules],
             pkg_name=package,
@@ -109,6 +132,13 @@ def validate_all_rules(
         )
 
         if len(validated) != len(indexed_rules):
+            logger.error(
+                "Validator count mismatch for %s==%s: expected %d, got %d",
+                package,
+                target_version,
+                len(indexed_rules),
+                len(validated),
+            )
             raise RuntimeError(
                 f"Rule validator returned {len(validated)} rules for "
                 f"{len(indexed_rules)} inputs for {package}=={target_version}. "
@@ -155,6 +185,15 @@ def reconcile_report(
         rule.get("documentation_validation_status") == "validated"
         for rule in validated_rules
     )
+
+    logger.debug(
+        "Reconciled rule report: total=%d exists=%d missing=%d unverifiable=%d doc_validated=%d",
+        report["total_rules"],
+        report["target_api_exists"],
+        report["target_api_missing"],
+        report["unverifiable_rules"],
+        report["documentation_validated_rules"],
+    )
     return report
 
 
@@ -194,7 +233,11 @@ def validate_rules_against_target(
         candidate = rule.get("candidate_new_api") or rule.get("new_api")
         rule["candidate_new_api"] = candidate
 
-        if not isinstance(candidate, str) or not candidate.strip() or "UNRESOLVED" in candidate.upper():
+        if (
+            not isinstance(candidate, str)
+            or not candidate.strip()
+            or "UNRESOLVED" in candidate.upper()
+        ):
             rule["target_api_status"] = "unverifiable"
             rule["validation_status"] = "not_validated"
             rule["resolution_reason"] = (
@@ -210,6 +253,7 @@ def validate_rules_against_target(
         return []
 
     if not req_path.is_file():
+        logger.warning("Requirements file not found for target validation: %s", req_path)
         return _mark_pending_as_failed(
             prepared_rules,
             f"Requirements file not found: {req_path}",
@@ -221,7 +265,16 @@ def validate_rules_against_target(
     install_version_map: dict[str, str] = {}
     for import_name, version in all_target_versions.items():
         dist_name = distribution_names.get(import_name, import_name)
-        if dist_name in install_version_map and install_version_map[dist_name] != version:
+        if (
+            dist_name in install_version_map
+            and install_version_map[dist_name] != version
+        ):
+            logger.error(
+                "Conflicting target versions for distribution %r: %r vs %r",
+                dist_name,
+                install_version_map[dist_name],
+                version,
+            )
             raise ValueError(
                 f"Conflicting target versions for distribution {dist_name!r}: "
                 f"{install_version_map[dist_name]!r} and {version!r}"
@@ -322,7 +375,11 @@ try:
     results = []
     for index, rule in enumerate(rules):
         candidate = rule.get("candidate_new_api") or rule.get("new_api")
-        if not isinstance(candidate, str) or not candidate.strip() or "UNRESOLVED" in candidate.upper():
+        if (
+            not isinstance(candidate, str)
+            or not candidate.strip()
+            or "UNRESOLVED" in candidate.upper()
+        ):
             results.append({
                 "index": index,
                 "status": "unverifiable",
@@ -349,16 +406,24 @@ except Exception as exc:
         rules_path.write_text(json.dumps(prepared_rules), encoding="utf-8")
 
         command = [
-            "docker", "run", "--rm",
-            "-v", f"{req_path.parent}:/project:ro",
-            "-v", f"{temp_dir}:/work",  # Removed :ro so container can write/execute cleanly            "-w", "/work",
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{req_path.parent}:/project:ro",
+            "-v",
+            f"{temp_dir}:/work",
+            "-w",
+            "/work",
             python_image,
-            "python", "/work/validate.py",
+            "python",
+            "/work/validate.py",
             f"/project/{req_path.name}",
             pkg_name,
             json.dumps(install_version_map),
             "/work/rules.json",
         ]
+        logger.debug("Executing target validation Docker container for %s==%s", pkg_name, target_version)
 
         try:
             result = subprocess.run(
@@ -368,29 +433,59 @@ except Exception as exc:
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired:
+            logger.warning(
+                "Target validation Docker run timed out after %ds for %s==%s",
+                timeout,
+                pkg_name,
+                target_version,
+            )
             return _mark_pending_as_failed(
                 prepared_rules, f"Validation timed out after {timeout} seconds"
             )
         except OSError as exc:
+            logger.error("Failed starting Docker target validation for %s: %s", pkg_name, exc)
             return _mark_pending_as_failed(
                 prepared_rules, f"Could not start Docker validation: {exc}"
             )
 
         if result.returncode != 0:
             details = (result.stderr or result.stdout or "No Docker output")[-4000:]
+            logger.error(
+                "Docker target validation exited with rc=%d for %s==%s: %s",
+                result.returncode,
+                pkg_name,
+                target_version,
+                details,
+            )
             return _mark_pending_as_failed(
                 prepared_rules, f"Docker validation failed: {details}"
             )
 
         try:
             report = json.loads(result.stdout.strip().splitlines()[-1])
-        except (IndexError, json.JSONDecodeError):
+        except (IndexError, json.JSONDecodeError) as exc:
+            logger.error(
+                "Failed parsing Docker target validation output for %s==%s (%s); stdout tail=%r",
+                pkg_name,
+                target_version,
+                exc,
+                (result.stdout or "")[-1000:],
+            )
             return _mark_pending_as_failed(
                 prepared_rules, "Could not parse Docker validation report"
             )
 
     if report.get("environment_status") != "ready":
-        details = report.get("details", report.get("environment_status", "unknown error"))
+        details = report.get(
+            "details", report.get("environment_status", "unknown error")
+        )
+        logger.warning(
+            "Target validation worker environment_status=%s for %s==%s: %s",
+            report.get("environment_status"),
+            pkg_name,
+            target_version,
+            details,
+        )
         return _mark_pending_as_failed(prepared_rules, str(details))
 
     seen_indices: set[int] = set()
@@ -410,7 +505,8 @@ except Exception as exc:
             rule["target_api_status"] = "target_api_exists"
             # Runtime existence is necessary but not sufficient for rule validity.
             rule["validation_status"] = (
-                "validated" if documentation_status == "validated"
+                "validated"
+                if documentation_status == "validated"
                 else documentation_status
             )
         elif status == "missing":
@@ -419,7 +515,8 @@ except Exception as exc:
         else:
             rule["target_api_status"] = "unverifiable"
             rule["validation_status"] = (
-                "needs_review" if documentation_status == "validated"
+                "needs_review"
+                if documentation_status == "validated"
                 else documentation_status
             )
 
@@ -429,6 +526,12 @@ except Exception as exc:
     # A malformed/partial worker report must not leave any rule pending.
     for index, rule in enumerate(prepared_rules):
         if index not in seen_indices and rule.get("target_api_status") == "pending":
+            logger.warning(
+                "Rule index %d missing from target validation report for %s==%s",
+                index,
+                pkg_name,
+                target_version,
+            )
             rule["target_api_status"] = "probe_failed"
             rule["validation_status"] = "unverifiable"
             rule["resolution_reason"] = "Rule missing from Docker validation report"

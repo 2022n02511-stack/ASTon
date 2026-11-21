@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import logging
 import os
 import queue
 import shutil
@@ -11,7 +12,6 @@ import threading
 import time
 import tokenize
 import uuid
-
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -26,6 +26,8 @@ from rich.progress import (
 )
 
 from aston.cli_ui.rich import console
+
+logger = logging.getLogger(__name__)
 
 
 class VerificationResult(str, Enum):
@@ -61,6 +63,13 @@ def _validate_python_syntax(
         ast.parse(source, filename=str(target_file))
 
     except SyntaxError as exc:
+        logger.warning(
+            "SyntaxError in candidate %s at line %s col %s: %s",
+            target_file,
+            exc.lineno,
+            exc.offset,
+            exc.msg,
+        )
         return VerificationOutput(
             status=VerificationResult.MIGRATION_ERROR,
             target_file=str(target_file),
@@ -73,6 +82,7 @@ def _validate_python_syntax(
         )
 
     except (OSError, UnicodeError) as exc:
+        logger.error("Failed reading source %s for syntax check: %s", target_file, exc)
         return VerificationOutput(
             status=VerificationResult.ENVIRONMENT_ERROR,
             target_file=str(target_file),
@@ -158,6 +168,7 @@ def _run_streaming_build(
                 and not timed_out
             ):
                 timed_out = True
+                logger.warning("Docker build timed out after %ds; terminating process", total_timeout)
 
                 try:
                     if os.name == "posix":
@@ -210,6 +221,7 @@ def _run_streaming_build(
         thread.join()
 
     returncode = process.wait()
+    logger.debug("Docker build finished with returncode=%d timed_out=%s", returncode, timed_out)
 
     return (
         returncode,
@@ -347,8 +359,10 @@ def _ensure_base_image(
         )
 
         if inspect.returncode == 0:
+            logger.debug("Docker base image %s found locally", python_image)
             return True, ""
 
+        logger.info("Pulling Docker base image %s (timeout=%ds)", python_image, timeout)
         pull = subprocess.run(
             [
                 docker,
@@ -362,22 +376,25 @@ def _ensure_base_image(
         )
 
         if pull.returncode != 0:
-            return (
-                False,
+            err_msg = (
                 pull.stderr.strip()
                 or pull.stdout.strip()
-                or "Could not pull the Docker base image.",
+                or "Could not pull the Docker base image."
             )
+            logger.error("Failed pulling Docker base image %s: %s", python_image, err_msg)
+            return False, err_msg
 
         return True, pull.stdout
 
     except subprocess.TimeoutExpired as exc:
+        logger.error("Base image pull exceeded %ds for %s: %s", timeout, python_image, exc)
         return (
             False,
             f"Base image pull exceeded {timeout} seconds: {exc}",
         )
 
     except OSError as exc:
+        logger.error("OS error checking/pulling base image %s: %s", python_image, exc)
         return False, str(exc)
 
 
@@ -400,6 +417,7 @@ def _run_container(
         network_mode,
         image_tag,
     ]
+    logger.debug("Running container %s with network=%s timeout=%ds", image_tag, network_mode, timeout)
 
     try:
         return (
@@ -414,6 +432,7 @@ def _run_container(
         )
 
     except subprocess.TimeoutExpired as exc:
+        logger.warning("Container %s timed out after %ds in network=%s", image_tag, timeout, network_mode)
         return None, exc
 
 
@@ -437,9 +456,10 @@ def _remove_image(
             timeout=30,
             check=False,
         )
+        logger.debug("Removed temporary Docker image %s", image_tag)
 
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.debug("Failed removing temporary Docker image %s: %s", image_tag, exc)
 
 
 def verify_single_file_in_docker(
@@ -636,8 +656,13 @@ def verify_single_file_in_docker(
     build_stderr = ""
     build_network = "none"
 
-    if preserve_context:
-        print(f"\n[ASTON DEBUG] Docker context: {context}")
+    logger.debug(
+        "Starting single-file verification for %s (image=%s, network_mode=%s, context=%s)",
+        target_abs,
+        python_image,
+        requested_network,
+        context,
+    )
 
     try:
         repo_copy = context / "repo"
@@ -740,10 +765,7 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
             encoding="utf-8",
         )
 
-        # --------------------------------------------------
         # BUILD: OFFLINE FIRST
-        # --------------------------------------------------
-
         build_command = [
             docker,
             "build",
@@ -768,6 +790,7 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
             )
 
         except (OSError, subprocess.SubprocessError) as exc:
+            logger.error("Docker build failed with OS/subprocess error for %s: %s", target_abs, exc)
             return VerificationOutput(
                 status=VerificationResult.ENVIRONMENT_ERROR,
                 target_file=str(target_abs),
@@ -800,16 +823,13 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
                 duration_seconds=time.monotonic() - started,
             )
 
-        # --------------------------------------------------
         # BUILD: BRIDGE FALLBACK
-        # --------------------------------------------------
-
         if rc != 0 and _is_network_connectivity_failure(
             build_stdout + "\n" + build_stderr
         ):
-            print(
-                "\n[ASTON] Offline build encountered a network failure. "
-                "Retrying with bridge networking."
+            logger.info(
+                "Offline Docker build hit a network error for %s; retrying with bridge networking",
+                target_abs,
             )
 
             bridge_command = [
@@ -836,6 +856,7 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
                 )
 
             except (OSError, subprocess.SubprocessError) as exc:
+                logger.error("Bridge Docker build retry failed for %s: %s", target_abs, exc)
                 return VerificationOutput(
                     status=VerificationResult.ENVIRONMENT_ERROR,
                     target_file=str(target_abs),
@@ -883,11 +904,9 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
                     duration_seconds=time.monotonic() - started,
                 )
 
-        # --------------------------------------------------
         # BUILD RESULT
-        # --------------------------------------------------
-
         if rc != 0:
+            logger.error("Docker build failed for %s (network=%s, rc=%d)", target_abs, build_network, rc)
             return VerificationOutput(
                 status=VerificationResult.ENVIRONMENT_ERROR,
                 target_file=str(target_abs),
@@ -906,10 +925,7 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
 
         image_created = True
 
-        # --------------------------------------------------
         # RUNTIME EXECUTION
-        # --------------------------------------------------
-
         initial_runtime_mode = (
             "bridge" if requested_network == "bridge" else "none"
         )
@@ -962,9 +978,9 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
             and run.returncode != 0
             and _is_network_connectivity_failure(combined)
         ):
-            print(
-                "\n[ASTON] Offline runtime encountered a network failure. "
-                "Retrying with bridge networking."
+            logger.info(
+                "Offline container runtime hit a network error for %s; retrying with bridge networking",
+                target_abs,
             )
 
             bridge_run, bridge_timeout = _run_container(
@@ -1012,13 +1028,16 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
             run = bridge_run
             selected_network = "bridge"
 
-        # --------------------------------------------------
         # FINAL RESULT
-        # --------------------------------------------------
-
         elapsed = time.monotonic() - started
 
         if run.returncode == 0:
+            logger.info(
+                "Single-file verification PASS for %s in %.1fs (network=%s)",
+                target_abs,
+                elapsed,
+                selected_network,
+            )
             return VerificationOutput(
                 status=VerificationResult.PASS,
                 target_file=str(target_abs),
@@ -1042,6 +1061,14 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
         status, error_type = _classify_runtime_failure(
             combined_output
         )
+        logger.warning(
+            "Single-file verification %s (%s) for %s in %.1fs (rc=%d)",
+            status.value,
+            error_type,
+            target_abs,
+            elapsed,
+            run.returncode,
+        )
 
         return VerificationOutput(
             status=status,
@@ -1064,8 +1091,6 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
             _remove_image(docker, image_tag)
 
         if preserve_context:
-            print(
-                f"\n[ASTON DEBUG] Docker context retained at: {context}"
-            )
+            logger.debug("Docker context retained at %s", context)
         else:
             shutil.rmtree(context, ignore_errors=True)

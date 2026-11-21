@@ -1,18 +1,23 @@
+import logging
 import os
-import subprocess
-import requests
-from pathlib import Path
-from dotenv import load_dotenv
-from aston.cli.console import rich_success, error, warning, info
 import re
 import shutil
+import subprocess
 import tempfile
-from aston.exceptions import GitHubError, ConfigurationError
-from aston.Utils.utility import request_with_backoff
+from pathlib import Path
+
+import requests
+from dotenv import load_dotenv
+
+from aston.cli.console import error, info, rich_success, warning
 from aston.config import load_config
-from aston.paths import get_aston_paths, find_repo_root
+from aston.exceptions import ConfigurationError, GitHubError
+from aston.paths import find_repo_root, get_aston_paths
+from aston.Utils.utility import request_with_backoff
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_API = "https://api.github.com"
@@ -20,6 +25,7 @@ GITHUB_API = "https://api.github.com"
 
 def verify_clean_git_workspace(repo_path: Path):
     """Ensure the user has no uncommitted changes before starting."""
+    logger.debug("Checking git workspace cleanliness in %s", repo_path)
     result = subprocess.run(
         ["git", "status", "--porcelain"],
         cwd=repo_path,
@@ -28,6 +34,7 @@ def verify_clean_git_workspace(repo_path: Path):
         text=True,
     )
     if result.stdout.strip():
+        logger.warning("Uncommitted changes detected in repository workspace: %s", repo_path)
         raise ConfigurationError(
             message="Uncommitted changes detected in repository workspace.",
             details="Please commit or stash your changes before running ASTon migration."
@@ -46,6 +53,7 @@ def _github_headers() -> dict[str, str]:
 
 def run_git_command(cmd: list[str], cwd: Path) -> tuple[bool, str]:
     """Runs a git command in the repository workspace."""
+    logger.debug("Running git command %s in %s", cmd, cwd)
     try:
         result = subprocess.run(
             cmd,
@@ -61,6 +69,7 @@ def run_git_command(cmd: list[str], cwd: Path) -> tuple[bool, str]:
         message = (e.stderr or e.stdout or "").strip()
         if not message:
             message = f"Git exited with code {e.returncode}"
+        logger.warning("Git command %s failed in %s: %s", cmd, cwd, message)
         return False, message
 
 
@@ -81,8 +90,11 @@ def get_git_remote_repo(repo_path: Path) -> str | None:
     )
 
     if match:
-        return match.group(1)
+        repo_slug = match.group(1)
+        logger.debug("Resolved GitHub remote repository %s from %s", repo_slug, repo_path)
+        return repo_slug
 
+    logger.debug("Origin remote URL did not match GitHub pattern: %s", output)
     return None
 
 
@@ -103,26 +115,33 @@ def create_migration_pr(
     # 1. Automatically resolve repository root and staging paths using Git-like CWD lookup
     repo_root = find_repo_root(repo_path) if repo_path else find_repo_root()
     paths = get_aston_paths(repo_root)
-    
-    migration_path = Path(files_path).expanduser().resolve() if files_path else paths["staging"]
+
+    migration_path = (
+        Path(files_path).expanduser().resolve()
+        if files_path
+        else paths["staging"]
+    )
     root = repo_root.resolve()
 
     target_base = base_branch or "main"
     is_draft = draft
 
     if not GITHUB_TOKEN:
+        logger.error("GITHUB_TOKEN is missing when attempting to create PR for %s", root)
         raise ConfigurationError(
             message="GITHUB_TOKEN environment variable is missing.",
             details="Set your GITHUB_TOKEN in your environment before attempting automated PR creation."
         )
 
     if not root.is_dir():
+        logger.error("Git repository directory not found: %s", root)
         raise ConfigurationError(
             message=f"Git repository directory not found: {root}",
             details="Ensure the target repository path points to a valid local directory."
         )
 
     if not migration_path.is_dir() or not any(migration_path.iterdir()):
+        logger.error("Migration output directory not found or empty: %s", migration_path)
         raise ConfigurationError(
             message=f"Migration output directory not found or empty: {migration_path}",
             details="Ensure 'aston migrate' has successfully generated outputs prior to PR creation."
@@ -135,11 +154,13 @@ def create_migration_pr(
 
     if not source_files:
         warning(f"No migration files found in: {migration_path}")
+        logger.info("No migration files found in %s; skipping PR creation", migration_path)
         return None
 
     github_repo = get_git_remote_repo(root)
 
     if not github_repo:
+        logger.error("Could not detect valid GitHub origin remote in %s", root)
         raise GitHubError(
             message="Could not detect a valid GitHub 'origin' remote URL.",
             details=f"Inspect git remotes in repository root: {root}"
@@ -148,6 +169,14 @@ def create_migration_pr(
     info(
         f"\nPreparing Pull Request for '{github_repo}' "
         f"on branch '{branch_name}' targeting '{target_base}' (Draft: {is_draft})..."
+    )
+    logger.info(
+        "Creating migration PR for repo=%s branch=%s base=%s draft=%s files=%d",
+        github_repo,
+        branch_name,
+        target_base,
+        is_draft,
+        len(source_files),
     )
 
     repo_check_url = f"{GITHUB_API}/repos/{github_repo}"
@@ -161,12 +190,19 @@ def create_migration_pr(
             headers=_github_headers(),
         )
     except requests.RequestException as exc:
+        logger.error("GitHub API connectivity check failed for %s: %s", github_repo, exc)
         raise GitHubError(
             message=f"GitHub API connectivity check failed for repository '{github_repo}'.",
             details=str(exc)
         ) from exc
 
     if check_response.status_code != 200:
+        logger.error(
+            "GitHub repo check failed for %s: status=%d body=%s",
+            github_repo,
+            check_response.status_code,
+            check_response.text[:500],
+        )
         raise GitHubError(
             message=f"Target repository '{github_repo}' does not exist or your GITHUB_TOKEN lacks access permissions.",
             details=f"HTTP Status: {check_response.status_code}\n{check_response.text}"
@@ -176,7 +212,6 @@ def create_migration_pr(
 
     try:
         with tempfile.TemporaryDirectory(prefix="aston_pr_") as temp_dir:
-
             worktree_path = Path(temp_dir) / "repo"
 
             # Fetch the latest configured base branch dynamically.
@@ -211,6 +246,8 @@ def create_migration_pr(
                     details=err
                 )
 
+            logger.debug("Created git worktree at %s on branch %s", worktree_path, branch_name)
+
             # Copy migrated files into the isolated worktree.
             relative_files = []
 
@@ -230,6 +267,7 @@ def create_migration_pr(
                 f"Copied {len(relative_files)} migrated file(s) "
                 "into isolated Git worktree."
             )
+            logger.debug("Copied %d file(s) into worktree: %s", len(relative_files), relative_files)
 
             # Stage only migrated files.
             ok, err = run_git_command(
@@ -257,6 +295,7 @@ def create_migration_pr(
 
             # Push isolated branch.
             info(f"Pushing branch {branch_name} to remote...")
+            logger.info("Pushing branch %s to origin for %s", branch_name, github_repo)
 
             ok, err = run_git_command(
                 ["git", "push", "-u", "origin", branch_name],
@@ -290,6 +329,7 @@ def create_migration_pr(
                     json=payload,
                 )
             except requests.RequestException as exc:
+                logger.error("Network error creating PR on %s: %s", github_repo, exc)
                 raise GitHubError(
                     message="Network request failed while creating GitHub Pull Request.",
                     details=str(exc)
@@ -300,14 +340,22 @@ def create_migration_pr(
                 rich_success(
                     f"Successfully created Pull Request: {html_url}"
                 )
-                
+                logger.info("Created Pull Request for %s: %s", github_repo, html_url)
+
                 # Automatically clean staging workspace post-PR success
                 shutil.rmtree(paths["staging"], ignore_errors=True)
                 paths["staging"].mkdir(parents=True, exist_ok=True)
                 info("Staging workspace cleaned automatically post-PR.")
+                logger.debug("Cleaned staging directory %s after PR creation", paths["staging"])
 
                 return html_url
 
+            logger.error(
+                "GitHub PR creation rejected for %s: status=%d body=%s",
+                github_repo,
+                response.status_code,
+                response.text[:500],
+            )
             raise GitHubError(
                 message=f"GitHub API rejected pull request creation (HTTP {response.status_code}).",
                 details=response.text
@@ -316,7 +364,7 @@ def create_migration_pr(
     finally:
         # Remove the temporary worktree without touching the original repo.
         if worktree_path is not None and worktree_path.exists():
-            run_git_command(
+            cleaned, clean_err = run_git_command(
                 [
                     "git",
                     "worktree",
@@ -326,3 +374,5 @@ def create_migration_pr(
                 ],
                 cwd=root,
             )
+            if not cleaned:
+                logger.warning("Failed removing temporary worktree %s: %s", worktree_path, clean_err)

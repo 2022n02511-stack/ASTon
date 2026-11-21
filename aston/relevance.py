@@ -1,4 +1,8 @@
+import logging
 import re
+
+logger = logging.getLogger(__name__)
+
 
 def normalize_api_symbol(symbol: str) -> str:
     """
@@ -30,9 +34,9 @@ def canonicalize_usage(record: dict) -> str:
 
     if alias and usage.startswith(alias + "."):
         if imported:
-            return imported + usage[len(alias):]
+            return imported + usage[len(alias) :]
         elif package:
-            return package + usage[len(alias):]
+            return package + usage[len(alias) :]
 
     return usage
 
@@ -106,7 +110,7 @@ def evaluate_relevance_and_completeness(
         if old_api:
             old_to_records.setdefault(old_api, []).append(record)
 
-        # Item 8: Build known target APIs ONLY from validated rules
+        # Build known target APIs ONLY from validated rules
         if new_api and status in auto_migration_statuses:
             validated_target_apis.add(new_api)
 
@@ -136,7 +140,7 @@ def evaluate_relevance_and_completeness(
                 })
                 review_covered_symbols.add(symbol)
 
-    # Item 8: Target compatibility established strictly from validated rules
+    # Target compatibility established strictly from validated rules
     known_target_symbols = observed_symbols & validated_target_apis
 
     expected_affected_symbols = determine_expected_affected_symbols(
@@ -161,7 +165,7 @@ def evaluate_relevance_and_completeness(
         and not review_covered_symbols
     )
 
-    return {
+    result = {
         "is_complete": is_complete,
         "observed_symbols": sorted(observed_symbols),
         "expected_affected_symbols": sorted(expected_affected_symbols),
@@ -173,3 +177,14 @@ def evaluate_relevance_and_completeness(
         "relevant_records": relevant_records,
         "review_records": review_records,
     }
+
+    logger.debug(
+        "Relevance audit: complete=%s observed=%d covered=%d review=%d uncovered=%s",
+        is_complete,
+        len(observed_symbols),
+        len(directly_covered_symbols),
+        len(review_covered_symbols),
+        sorted(uncovered_symbols),
+    )
+
+    return result

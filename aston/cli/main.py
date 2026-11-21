@@ -18,19 +18,42 @@ from aston.cli.commands import (
 from aston.config import load_config, set_runtime_config
 from aston.ledger import log_notification, show_notifications
 from aston.Utils.guard import _has_completed_migration
+import logging
+
+logger = logging.getLogger(__name__)
+from aston.ledger import setup_logging
+from aston.report import load_migration_report, render_migration_report
 
 
 def main():
+    common_parser = argparse.ArgumentParser(add_help=False)
+    common_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Show detailed debug logs in the terminal",
+    )
+    common_parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Suppress non-error terminal output",
+    )
+
     parser = argparse.ArgumentParser(
         prog="aston",
-        description="ASTon: Automated repo analyzer and migration CLI tool."
+        description="ASTon: Automated repo analyzer and migration CLI tool.",
+        parents=[common_parser],
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Init command
     init_parser = subparsers.add_parser(
         "init",
-        help="Initialize ASTon workspace and .gitignore protection"
+        help="Initialize ASTon workspace and .gitignore protection",
+        parents=[common_parser],
     )
     init_parser.add_argument(
         "--path",
@@ -271,9 +294,39 @@ def main():
         help="Repository directory (defaults to CWD discovery)",
     )
 
+    # Report command
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Show summary report for a migration run",
+        parents=[common_parser],
+    )
+    report_parser.add_argument(
+        "--path",
+        type=str,
+        default=None,
+        help="Target repository directory (defaults to CWD discovery)",
+    )
+    report_parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Specific run ID to display (defaults to latest run)",
+    )
+    report_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output the full report as JSON",
+    )
+
     args = parser.parse_args()
 
     try:
+        log_file = setup_logging(
+            verbose=getattr(args, "verbose", False),
+            quiet=getattr(args, "quiet", False),
+        )
+        logger.debug("Logging initialized at %s for command '%s'", log_file, args.command)
+
         # Helper to resolve repo path dynamically for any command
         def get_target_repo():
             return Path(args.path).expanduser().resolve() if args.path else find_repo_root()
@@ -305,6 +358,24 @@ def main():
         elif args.command == "doctor":
             repo_path = Path(args.path).expanduser().resolve() if args.path else find_repo_root()
             handle_doctor(test_llm=args.test_llm, repo_path=repo_path)
+
+        elif args.command == "report":
+            repo_path = get_target_repo()
+            logger.debug(
+                "Loading migration report for repo=%s run_id=%s as_json=%s",
+                repo_path,
+                args.run_id,
+                args.json,
+            )
+            report_data, report_path = load_migration_report(
+                repo_path=repo_path,
+                run_id=args.run_id,
+            )
+            render_migration_report(
+                report=report_data,
+                report_path=report_path,
+                as_json=args.json,
+            )    
 
         elif args.command == "check":
             repo_path = get_target_repo()

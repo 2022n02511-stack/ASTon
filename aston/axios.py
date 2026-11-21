@@ -1,22 +1,33 @@
 import ast
 import json
+import logging
 import os
+import time
 from pathlib import Path
+
 from dotenv import load_dotenv
 from mistralai.client import Mistral
+
+from aston.cli.console import error, info, rich_success, warning
+from aston.config import load_config
+from aston.docker import VerificationResult, verify_single_file_in_docker
+from aston.exceptions import ConfigurationError, LLMError
+from aston.ingestion import (
+    get_latest_pypi_version,
+    run_stage1_pipeline,
+    synthesize_fallback_rules,
+)
+from aston.llm import call_llm
+from aston.paths import find_repo_root
+from aston.relevance import (
+    canonicalize_usage,
+    evaluate_relevance_and_completeness,
+    normalize_api_symbol,
+)
 from aston.rule_validation import validate_rules_against_target
 from aston.scanner import parser
-from aston.ingestion import run_stage1_pipeline, get_latest_pypi_version, synthesize_fallback_rules
-from aston.relevance import evaluate_relevance_and_completeness, canonicalize_usage
-from aston.docker import verify_single_file_in_docker, VerificationResult
-from aston.relevance import normalize_api_symbol
-from aston.cli.console import rich_success, error, warning, info
-from aston.exceptions import ConfigurationError, LLMError
-import time
-from aston.llm import call_llm
-from aston.config import load_config
-from aston.paths import find_repo_root
 
+logger = logging.getLogger(__name__)
 
 # API_KEY = os.environ.get("MISTRAL_API_KEY")
 # client = Mistral(api_key=API_KEY) if API_KEY else None
@@ -89,10 +100,9 @@ def stage0(package_name: str, repo_index: dict) -> set[str]:
         for record in stage0_records
     }
 
-    info(
-        f"Dynamic AST Scanned Usages for {package_name}: "
-        f"{dynamic_stage0_symbols}"
-    )
+    msg = f"Dynamic AST Scanned Usages for {package_name}: {dynamic_stage0_symbols}"
+    info(msg)
+    logger.debug(msg)
 
     return dynamic_stage0_symbols
 
@@ -172,10 +182,12 @@ def man_extract(
             }
         )
 
-    info(
-        f"\nman_extract: {filename} | "
+    summary_msg = (
+        f"man_extract: {filename} | "
         f"input usages={len(parses)} | matched usages={len(report)}"
     )
+    info(summary_msg)
+    logger.debug(summary_msg)
 
     return report
 
@@ -194,8 +206,6 @@ def code_patcher(
     raw_code_examples: list[str] | None = None,
 ):
     """Stage 3 migration and Stage 5 verification-guided repair."""
-
-
     config = load_config()
 
     llm_cfg = config.get("llm", {})
@@ -204,9 +214,7 @@ def code_patcher(
     temperature = llm_cfg.get("temperature", 0.0)
     max_retries = llm_cfg.get("max_retries", 3)
 
-    # CHANGE: Require rules and matches for a normal migration, but don't
-    # block repair mode. A verifier error can still need repair even when
-    # the original migration evidence is incomplete.
+    # Require rules and matches for a normal migration, but don't block repair mode.
     if not repair_context and (
         not contains_items(rules)
         or not contains_items(matches)
@@ -215,6 +223,7 @@ def code_patcher(
             "No valid migration rules or matching usages. "
             "Retaining original code unmodified."
         )
+        logger.debug("code_patcher skipped: missing rules or matches in non-repair mode")
         return source_code
 
     system_prompt = prompt
@@ -292,21 +301,49 @@ CURRENT SOURCE CODE TO MIGRATE OR REPAIR:
 {source_code}
 """
 
-
     delay = 2.0
     response = None
 
+    logger.debug(
+        "Calling LLM patcher (provider=%s, model=%s, repair_mode=%s)",
+        provider_name,
+        model_name,
+        bool(repair_context),
+    )
+
     for attempt in range(1, max_retries + 1):
         try:
-            response = call_llm(prompt=cont, provider=provider_name, model=model_name, temperature=temperature, system_prompt=system_prompt)
+            response = call_llm(
+                prompt=cont,
+                provider=provider_name,
+                model=model_name,
+                temperature=temperature,
+                system_prompt=system_prompt,
+            )
             break
         except Exception as exc:
             if attempt == max_retries:
+                logger.error(
+                    "LLM call failed after %d attempt(s) (%s/%s): %s",
+                    max_retries,
+                    provider_name,
+                    model_name,
+                    exc,
+                )
                 raise LLMError(
-                    message=f"Mistral LLM call failed after {max_retries} attempts.",
-                    details=str(exc)
+                    message=f"LLM call failed after {max_retries} attempts.",
+                    details=str(exc),
                 ) from exc
-            warning(f"Mistral API call failed ({exc}). Retrying in {delay}s ({attempt}/{max_retries})...")
+            warning(
+                f"LLM API call failed ({exc}). Retrying in {delay}s ({attempt}/{max_retries})..."
+            )
+            logger.warning(
+                "LLM call attempt %d/%d failed (%s); retrying in %.1fs",
+                attempt,
+                max_retries,
+                exc,
+                delay,
+            )
             time.sleep(delay)
             delay *= 2.0
 
@@ -320,6 +357,7 @@ CURRENT SOURCE CODE TO MIGRATE OR REPAIR:
             "Patcher returned syntactically invalid Python code "
             f"({se}); rejecting candidate."
         )
+        logger.error("Patcher output failed AST parse (%s); rejecting candidate", se)
         return source_code
 
     if repair_context:
@@ -330,20 +368,17 @@ CURRENT SOURCE CODE TO MIGRATE OR REPAIR:
         }
 
         if clean == source_code:
-            warning(
-                "Repair returned unchanged source; "
-                "rejecting candidate."
-            )
+            warning("Repair returned unchanged source; rejecting candidate.")
+            logger.warning("Repair returned unchanged source; rejecting candidate")
             return source_code
 
         if clean in failed_sources:
-            warning(
-                "Repair repeated a previously failed source; "
-                "rejecting candidate."
-            )
+            warning("Repair repeated a previously failed source; rejecting candidate.")
+            logger.warning("Repair repeated a previously failed source; rejecting candidate")
             return source_code
 
     return clean
+
 
 def scraper(
     pkg_name: str,
@@ -356,16 +391,13 @@ def scraper(
     source_file: str,
 ):
     """Run migration-rule coverage auditing, targeted extraction, and matching."""
-    print("\n==================================================")
-    print("--- [Stage 1] Multi-Boundary Chain Ingestion ---")
-    print("==================================================")
+    logger.info("Stage 1: Multi-Boundary Chain Ingestion for package=%s file=%s", pkg_name, source_file)
 
     config = load_config()
 
     llm_cfg = config.get("llm", {})
     provider_name = llm_cfg.get("provider", "mistral")
     model_name = llm_cfg.get("model", "codestral-latest")
-
 
     def normalize_set(values) -> set[str]:
         if not values:
@@ -398,7 +430,12 @@ def scraper(
 
     working_doc_text = doc_text or ""
 
-    print("\n========== INITIAL AUDIT ==========")
+    logger.debug(
+        "Initial audit for %s: stage0_symbols=%s initial_rules=%d",
+        pkg_name,
+        sorted(stage0_symbols),
+        len(working_rules),
+    )
     info(f"STAGE 0 SYMBOLS: {sorted(stage0_symbols)}")
     info(f"INITIAL RULE COUNT: {len(working_rules)}")
 
@@ -428,9 +465,11 @@ def scraper(
     )
 
     if targeted_symbols:
-        print("\n==================================================")
-        print("--- [Stage 1.5] Targeted Rule Extraction ---")
-        print("==================================================")
+        logger.info(
+            "Stage 1.5: Targeted Rule Extraction for %s — focus_symbols=%s",
+            pkg_name,
+            sorted(targeted_symbols),
+        )
         info(f"FOCUS SYMBOLS: {sorted(targeted_symbols)}")
 
         try:
@@ -469,9 +508,16 @@ def scraper(
 
             info(f"TARGETED CANDIDATES RETURNED: {len(extra_rules)}")
             info(f"NEW DISTINCT RULES ADDED: {added_count}")
+            logger.debug(
+                "Targeted extraction for %s returned %d candidates, added %d distinct rules",
+                pkg_name,
+                len(extra_rules),
+                added_count,
+            )
 
         except Exception as exc:
             error(f"Targeted extraction failed: {repr(exc)}")
+            logger.error("Targeted extraction failed for %s: %s", pkg_name, exc)
 
         audit = evaluate_relevance_and_completeness(
             stage0_symbols,
@@ -479,24 +525,24 @@ def scraper(
             working_doc_text,
         )
 
-    # ==================================================
-    # --- [Stage 1.75] Semantic Synthesis Fallback ---
-    # ==================================================
+    # Stage 1.75: Semantic Synthesis Fallback
     uncovered_after_extraction = normalize_set(audit.get("uncovered_symbols", []))
     if uncovered_after_extraction or len(working_rules) == 0:
-        print("\n=======================================")
-        print("--- LLM Semantic Synthesis Fallback ---")
-        print("==========================================")
-        info(f"Uncovered symbols requiring fallback synthesis: {sorted(uncovered_after_extraction or observed_symbols)}")
-        
         symbols_to_synthesize = list(uncovered_after_extraction or observed_symbols)
+        logger.info(
+            "Stage 1.75: Semantic Synthesis Fallback for %s — uncovered=%s",
+            pkg_name,
+            sorted(symbols_to_synthesize),
+        )
+        info(f"Uncovered symbols requiring fallback synthesis: {sorted(symbols_to_synthesize)}")
+
         fallback_rules = synthesize_fallback_rules(
             uncovered_symbols=symbols_to_synthesize,
             module_name=pkg_name,
             target_version=target_version,
             pkg_name=pkg_name,
             provider=provider_name,
-            model=model_name
+            model=model_name,
         )
 
         existing_keys = {rule_key(rule) for rule in working_rules}
@@ -504,7 +550,6 @@ def scraper(
         for rule in fallback_rules:
             if not isinstance(rule, dict):
                 continue
-            # Ensure package tag is populated correctly
             rule.setdefault("package", pkg_name)
             candidate = dict(rule)
             key = rule_key(candidate)
@@ -514,50 +559,50 @@ def scraper(
                 fallback_added += 1
 
         info(f"SYNTHESIZED FALLBACK RULES ADDED: {fallback_added}")
+        logger.debug(
+            "Synthesized %d fallback rule(s) for %s",
+            fallback_added,
+            pkg_name,
+        )
 
-        # Re-audit with synthesized rules included
-            # Re-audit with synthesized rules included
         audit = evaluate_relevance_and_completeness(
             stage0_symbols,
             working_rules,
             working_doc_text,
         )
 
-    print("\n==================================================")
-    print("--- [Stage 2] Final Relevance & Completeness Audit ---")
-    print("==================================================")
-    print()
+    # Stage 2: Final Relevance & Completeness Audit
+    logger.info(
+        "Stage 2: Final Relevance & Completeness Audit for %s (observed=%d, total_rules=%d)",
+        pkg_name,
+        len(observed_symbols),
+        len(working_rules),
+    )
     info(f"OBSERVED: {sorted(observed_symbols)}")
     info(f"TOTAL RULES: {len(working_rules)}")
-    info("FINAL AUDIT RESULT SAVED:")
 
-    # --- Save Final Audit Result Artifact ---
     repo_root = find_repo_root()
     reports_dir = repo_root / ".aston" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    # Use package name to keep audit files distinct per dependency
     audit_filename = f"{pkg_name.lower()}_final_audit_result.json"
     final_audit_path = reports_dir / audit_filename
-    
     final_audit_path.write_text(
         json.dumps(audit, indent=3, default=str),
-        encoding="utf-8"
+        encoding="utf-8",
     )
-    info(f"  -> {final_audit_path.relative_to(repo_root)}")
-    # ----------------------------------------
-
+    info(f"FINAL AUDIT RESULT SAVED -> {final_audit_path.relative_to(repo_root)}")
+    logger.debug("Saved final audit artifact to %s", final_audit_path)
 
     relevant_rules = audit.get("relevant_records", [])
-    
+
     # Fallback promotion: If relevant_rules is empty but review_records has items (e.g. synthesized rules), promote them
     if not relevant_rules and audit.get("review_records"):
         relevant_rules = audit.get("review_records", [])
 
     missing = normalize_set(audit.get("missing_symbols", []))
     uncovered = normalize_set(audit.get("uncovered_symbols", []))
-    
-    # If we promoted rules, clear out the uncovered symbols they address so completeness resolves correctly
+
     if relevant_rules and uncovered:
         for rule in relevant_rules:
             old_sym = normalize_api_symbol(rule.get("old_api", ""))
@@ -570,26 +615,32 @@ def scraper(
         and not uncovered
     )
 
-    print("\n========== FINAL COVERAGE STATUS ==========")
-    info(f"\nComplete: {is_genuinely_complete}")
-
-    # Resolve target repo root and route changes.json into .aston/reports/
-    repo_root = find_repo_root() # Or pass root_path down if available
-    reports_dir = repo_root / ".aston" / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    info(f"Complete: {is_genuinely_complete}")
+    logger.info(
+        "Coverage status for %s: complete=%s relevant_rules=%d missing=%s uncovered=%s",
+        pkg_name,
+        is_genuinely_complete,
+        len(relevant_rules),
+        sorted(missing),
+        sorted(uncovered),
+    )
 
     changes_path = reports_dir / "changes.json"
     changes_path.write_text(
         json.dumps(relevant_rules, indent=2, default=str),
-        encoding="utf-8"
+        encoding="utf-8",
+    )
+    pkg_changes_path = reports_dir / f"{pkg_name.lower()}_changes.json"
+    pkg_changes_path.write_text(
+        json.dumps(relevant_rules, indent=2, default=str),
+        encoding="utf-8",
     )
 
     info(f"Canonical contract saved in {changes_path.relative_to(repo_root)}")
+    logger.debug("Saved canonical rules to %s and %s", changes_path, pkg_changes_path)
 
-    print("\n==================================================")
-    print("--- [Stage 3] Matching Usages ---")
-    print("==================================================")
-
+    # Stage 3: Matching Usages
+    logger.info("Stage 3: Matching usages for %s in %s", pkg_name, source_file)
     report = man_extract(
         relevant_rules,
         parses,
@@ -600,4 +651,3 @@ def scraper(
     info(f"RELEVANT RULES: {len(relevant_rules)}")
 
     return report, relevant_rules, is_genuinely_complete
-

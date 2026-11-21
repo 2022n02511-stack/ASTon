@@ -1,27 +1,26 @@
+import json
+import logging
+import os
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
+
+from aston.artifacts.save_attempt import _save_verification_result, save_code
+from aston.axios import code_patcher, scraper, stage0
+from aston.cli.console import error, info, rich_success, warning
+from aston.cli_ui.rich import print_aston_banner, print_rich_aston_banner, run_with_animation
+from aston.docker import VerificationOutput, VerificationResult, verify_single_file_in_docker
+from aston.exceptions import ConfigurationError
+from aston.repo_index import repo_map
+from aston.rule_validation import (
+    reconcile_report,
+    validate_all_rules,
+    validate_rules_against_target,
+)
 from aston.scanner import parser
 from aston.watcher import watcher
-import json
-import os
-from uuid import uuid4
-from aston.axios import code_patcher, stage0, scraper
-from aston.docker import verify_single_file_in_docker, VerificationResult, VerificationOutput
-from aston.repo_index import repo_map
-from aston.cli.console import rich_success, error, warning, info
 
-from aston.rule_validation import (
-    validate_rules_against_target,
-    validate_all_rules,
-    reconcile_report,
-)
-from aston.artifacts.save_attempt import save_code, _save_verification_result
-from aston.cli_ui.rich import (
-    print_rich_aston_banner,
-    run_with_animation,
-    print_aston_banner,
-)
-from aston.exceptions import ConfigurationError
+logger = logging.getLogger(__name__)
 
 
 def _safe_read_text(path: Path) -> str:
@@ -42,7 +41,10 @@ def _write_candidate(path: Path, source: str) -> bool:
 def _candidate_path(path: str | Path, run_id: str, run_dir: Path) -> Path:
     source_path = Path(path).expanduser()
     # Place candidates safely inside .aston/runs/<run_id>/, away from source code
-    safe_name = f"{source_path.stem}.aston_candidate_{uuid4().hex[:6]}{source_path.suffix or '.py'}"
+    safe_name = (
+        f"{source_path.stem}.aston_candidate_{uuid4().hex[:6]}"
+        f"{source_path.suffix or '.py'}"
+    )
     return (run_dir / safe_name).resolve()
 
 
@@ -79,7 +81,7 @@ def _save_successful_migration(
     except ValueError as exc:
         raise ConfigurationError(
             message=f"Migration source is outside repository root: {source_path}",
-            details="Ensure target files reside within the active repository directory."
+            details="Ensure target files reside within the active repository directory.",
         ) from exc
 
     staging_root = repo_root / ".aston" / "staging"
@@ -87,6 +89,7 @@ def _save_successful_migration(
 
     migrated_path.parent.mkdir(parents=True, exist_ok=True)
     migrated_path.write_text(verified_code, encoding="utf-8")
+    logger.debug("Staged migrated code to %s", migrated_path)
 
     gitignore_path = repo_root / ".gitignore"
     ignore_entry = ".aston/"
@@ -96,7 +99,9 @@ def _save_successful_migration(
             with open(gitignore_path, "a", encoding="utf-8") as f:
                 f.write(f"\n# ASTon AI Migration Staging\n{ignore_entry}\n")
     else:
-        gitignore_path.write_text(f"# ASTon AI Migration Staging\n{ignore_entry}\n", encoding="utf-8")
+        gitignore_path.write_text(
+            f"# ASTon AI Migration Staging\n{ignore_entry}\n", encoding="utf-8"
+        )
 
     rich_success(f"Code successfully patched and staged to {migrated_path.relative_to(repo_root)}")
 
@@ -143,8 +148,7 @@ def _get_file_usages(
     return [
         usage
         for usage in usages
-        if isinstance(usage, dict)
-        and usage.get("package") == package_name
+        if isinstance(usage, dict) and usage.get("package") == package_name
     ]
 
 
@@ -196,6 +200,13 @@ def _verify_candidate(
     network_mode: str,
     build_timeout: int,
 ) -> VerificationOutput:
+    logger.debug(
+        "Verifying candidate %s in Docker (image=%s, network=%s, timeout=%s)",
+        candidate_path,
+        python_image,
+        network_mode,
+        docker_time,
+    )
     return verify_single_file_in_docker(
         str(candidate_path),
         temp_req_path,
@@ -251,10 +262,12 @@ def repair_file(
         warning(
             f"Verification disabled (verification.enabled=false); staging {display_path} without Docker verification."
         )
+        logger.info("Skipping Docker verification for %s (verification_enabled=False)", display_path)
         try:
             candidate_code = _safe_read_text(candidate_path)
         except (OSError, UnicodeError) as exc:
             error(f"Cannot read candidate source {candidate_path}: {exc}")
+            logger.error("Failed reading candidate source %s: %s", candidate_path, exc)
             _record_failure(display_path, failed_files)
             return False
 
@@ -263,7 +276,7 @@ def repair_file(
         _record_success(display_path, passed_files, failed_files)
         return True
 
-    # --- Bug Fix: Safely resolve repair instructions without NameError ---
+    # Safely resolve repair instructions without NameError
     rep_con = context_data.get("repair_instructions")
     repair_context_path = Path(__file__).parent / "repair_context.txt"
 
@@ -288,10 +301,17 @@ def repair_file(
     while pr.status != VerificationResult.PASS and retry_count < max_retries:
         if not _is_repairable_failure(pr):
             warning(
-                "\nNot sending this failure to code repair: "
+                "Not sending this failure to code repair: "
                 f"status={pr.status}, "
                 f"type={getattr(pr, 'error_type', None)}, "
                 f"message={getattr(pr, 'error_message', None)}"
+            )
+            logger.warning(
+                "Non-repairable failure for %s: status=%s type=%s message=%s",
+                display_path,
+                pr.status,
+                getattr(pr, "error_type", None),
+                getattr(pr, "error_message", None),
             )
             break
 
@@ -301,6 +321,7 @@ def repair_file(
             failed_source = _safe_read_text(candidate_path)
         except (OSError, UnicodeError) as exc:
             error(f"Cannot read candidate source {candidate_path}: {exc}")
+            logger.error("Failed reading candidate source %s during repair: %s", candidate_path, exc)
             _record_failure(display_path, failed_files)
             return False
 
@@ -315,11 +336,18 @@ def repair_file(
         )
 
         warning(
-            f"\nStage 4 Failed with "
+            f"Stage 4 Failed with "
             f"{getattr(pr, 'error_type', None)} "
             f"(Repair Attempt {retry_count}/{max_retries})"
         )
         info("Routing to Stage 5 Self-Healing Repair Loop...")
+        logger.info(
+            "Repair attempt %d/%d for %s (error_type=%s)",
+            retry_count,
+            max_retries,
+            display_path,
+            getattr(pr, "error_type", None),
+        )
 
         repair_context = {
             "file_name": str(candidate_path),
@@ -336,8 +364,9 @@ def repair_file(
         context_artifact_path = file_run_dir / f"repair_context_{retry_count}.json"
         context_artifact_path.write_text(
             json.dumps(repair_context, indent=3, default=str),
-            encoding="utf-8"
+            encoding="utf-8",
         )
+        logger.debug("Wrote repair context artifact to %s", context_artifact_path)
 
         factored_code = code_patcher(
             source_code=failed_source,
@@ -355,11 +384,13 @@ def repair_file(
 
         if not isinstance(factored_code, str) or not factored_code.strip():
             warning("Repair returned empty or invalid source. Stopping.")
+            logger.warning("Repair patcher returned empty/non-string source for %s", display_path)
             _record_failure(display_path, failed_files)
             return False
 
         if factored_code == failed_source:
             warning("Repair returned unchanged source. Stopping.")
+            logger.warning("Repair patcher returned unchanged source for %s", display_path)
             _record_failure(display_path, failed_files)
             return False
 
@@ -368,6 +399,7 @@ def repair_file(
 
         if not _write_candidate(candidate_path, factored_code):
             warning("Could not write repaired candidate. Stopping.")
+            logger.error("Failed writing repaired candidate to %s", candidate_path)
             _record_failure(display_path, failed_files)
             return False
 
@@ -392,6 +424,7 @@ def repair_file(
             verified_code = _safe_read_text(candidate_path)
         except (OSError, UnicodeError) as exc:
             error(f"Cannot read verified candidate {candidate_path}: {exc}")
+            logger.error("Failed reading verified candidate %s: %s", candidate_path, exc)
             _record_failure(display_path, failed_files)
             return False
 
@@ -404,11 +437,18 @@ def repair_file(
 
         _record_success(display_path, passed_files, failed_files)
         rich_success("Sandboxed Verification Successful!")
+        logger.info("Verification passed for %s after %d repair attempt(s)", display_path, retry_count)
         return True
 
     info(
-        f"\nVerification stopped after {retry_count} repair attempts. "
+        f"Verification stopped after {retry_count} repair attempts. "
         "Original source was preserved."
+    )
+    logger.warning(
+        "Verification stopped for %s after %d repair attempt(s) with status=%s",
+        display_path,
+        retry_count,
+        pr.status,
     )
 
     _record_failure(display_path, failed_files)
@@ -446,9 +486,7 @@ def run_for_repo(
     with open(migrations_path, "r", encoding="utf-8") as f:
         migrations = json.load(f)
 
-    print("\n==================================================")
-    print("--- [Stage 0] Global Repository Scanned Usages ---")
-    print("==================================================")
+    logger.info("Stage 0: Inspecting repository usages for %s", path)
 
     all_rules: dict[str, list] = {}
     all_reports: dict[str, list] = {}
@@ -466,7 +504,7 @@ def run_for_repo(
         if not declared_version or not target_version:
             raise ConfigurationError(
                 message=f"Missing version specification for package '{module}'.",
-                details=f"declared={declared_version!r}, target={target_version!r}"
+                details=f"declared={declared_version!r}, target={target_version!r}",
             )
 
         current_version = declared_version
@@ -485,23 +523,26 @@ def run_for_repo(
                 f"[SKIP] {path} has no indexed usages of {module}; "
                 "skipping per-file audit."
             )
+            logger.debug("Skipping %s for module %s: no indexed usages", path, module)
             continue
 
-        report, relevant_rules, is_complete = scraper(module,
-                    current_version,
-                    target_version,
-                    stage0_symbols,
-                    file_usages,
-                    composed_rules,
-                    doc_text,
-                    source_file=path,
-                    )
+        report, relevant_rules, is_complete = scraper(
+            module,
+            current_version,
+            target_version,
+            stage0_symbols,
+            file_usages,
+            composed_rules,
+            doc_text,
+            source_file=path,
+        )
 
         if not report:
             warning(
                 f"No legacy usages matched in {path}. "
                 "Skipping migration for this file."
             )
+            logger.debug("No legacy usages matched in %s for module %s", path, module)
             continue
 
         if not is_complete:
@@ -547,15 +588,18 @@ def run_for_repo(
         validated_rules=validated_rules,
     )
 
-    flat_filename = path.replace("/", "_")
-    output_path = (
-        root / ".aston" / "reports"
-        / f"{Path(flat_filename).stem}_changes.json"
-    )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    file_slug = path.replace("/", "_").replace(".py", "")
+    file_run_dir = run_dir / file_slug
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(final_report_dict, f, indent=3)
+    output_path = root / ".aston" / "reports" / f"{file_slug}_changes.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(final_report_dict, indent=3), encoding="utf-8")
+
+    # Also store a copy inside the active run directory so per-run reports can read it directly
+    if run_dir is not None:
+        run_changes_path = Path(run_dir) / "changes" / f"{file_slug}_changes.json"
+        run_changes_path.parent.mkdir(parents=True, exist_ok=True)
+        run_changes_path.write_text(json.dumps(final_report_dict, indent=3), encoding="utf-8")
 
     validated_all_rules_dict = {}
     for rule in validated_rules:
@@ -565,8 +609,7 @@ def run_for_repo(
         validated_all_rules_dict.setdefault(pkg, []).append(rule)
 
     has_valid_rules = any(
-        bool(package_rules)
-        for package_rules in validated_all_rules_dict.values()
+        bool(package_rules) for package_rules in validated_all_rules_dict.values()
     )
     has_valid_matches = any(
         isinstance(report, list) and len(report) > 0
@@ -575,12 +618,10 @@ def run_for_repo(
 
     if not has_valid_rules or not has_valid_matches:
         info(f"[SKIP] No applicable migration for {path}")
+        logger.info("Skipping %s: no valid rules or legacy matches", path)
         return True, {}
 
-    file_slug = path.replace("/", "_").replace(".py", "")
-    file_run_dir = run_dir / file_slug
     file_run_dir.mkdir(parents=True, exist_ok=True)
-
     save_code(file_run_dir / "original.py", source_code)
 
     raw_code_examples = []
@@ -600,7 +641,7 @@ def run_for_repo(
     except ValueError as exc:
         raise ConfigurationError(
             message=f"Source file {source_path} is outside repository root {root}.",
-            details="All files targeted for migration must be located within the active repository workspace."
+            details="All files targeted for migration must be located within the active repository workspace.",
         ) from exc
 
     original_path = source_path
@@ -609,10 +650,12 @@ def run_for_repo(
 
     if not _write_candidate(candidate_path, source_code):
         error("Original source input is empty or invalid; refusing to patch.")
+        logger.error("Refusing to patch %s: original source is empty/invalid", path)
         _record_failure(path, failed_files)
         return False, {}
 
     try:
+        logger.info("Generating migrated candidate code for %s", path)
         factored_code = code_patcher(
             source_code=source_code,
             matches=all_reports,
@@ -629,11 +672,13 @@ def run_for_repo(
 
         if not isinstance(factored_code, str) or not factored_code.strip():
             warning("Patcher returned empty or invalid source. Original source preserved.")
+            logger.warning("Code patcher returned empty/invalid code for %s", path)
             _record_failure(path, failed_files)
             return False, {}
 
         if factored_code == source_code:
             warning("Patcher returned unchanged source. Skipping verification.")
+            logger.info("Code patcher returned unchanged source for %s; skipping verification", path)
             _record_success(path, passed_files, failed_files)
             return True, {}
 
@@ -641,11 +686,16 @@ def run_for_repo(
 
         if not _write_candidate(candidate_path, factored_code):
             warning("Could not write candidate source. Original source preserved.")
+            logger.error("Failed writing candidate source for %s to %s", path, candidate_path)
             _record_failure(path, failed_files)
             return False, {}
 
         if not verification_enabled:
-            warning(f"Verification disabled (verification.enabled=false); staging {path} without Docker verification.")
+            warning(
+                f"Verification disabled (verification.enabled=false); "
+                f"staging {path} without Docker verification."
+            )
+            logger.info("Staging %s without Docker verification (verification_enabled=False)", path)
             _save_successful_migration(path, factored_code, file_run_dir, str(root))
             candidate_path.unlink(missing_ok=True)
             _record_success(path, passed_files, failed_files)
@@ -692,9 +742,15 @@ def run_for_repo(
             candidate_path.unlink(missing_ok=True)
             _record_success(path, passed_files, failed_files)
             rich_success("Sandboxed Verification Successful!")
+            logger.info("Initial Docker verification passed for %s", path)
             return True, context_data
 
-        info(f"\nInitial verification failed for {path}. Starting repair loop...")
+        info(f"Initial verification failed for {path}. Starting repair loop...")
+        logger.warning(
+            "Initial Docker verification failed for %s (status=%s); entering repair loop",
+            path,
+            pr.status,
+        )
 
         success = repair_file(
             path=path,

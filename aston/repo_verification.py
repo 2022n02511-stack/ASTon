@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import subprocess
@@ -5,8 +6,8 @@ import tempfile
 import threading
 import time
 import uuid
-
 from pathlib import Path
+
 from rich.progress import (
     BarColumn,
     Progress,
@@ -14,6 +15,10 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
+
+from aston.cli.console import error
+
+logger = logging.getLogger(__name__)
 
 
 def _is_network_failure(output: str) -> bool:
@@ -111,10 +116,15 @@ def _run_docker_with_progress(
 
             if elapsed >= total_timeout:
                 timed_out = True
+                logger.warning(
+                    "Full-repo Docker verification timed out after %ds",
+                    total_timeout,
+                )
 
                 try:
                     if os.name == "posix":
                         import signal
+
                         os.killpg(process.pid, signal.SIGTERM)
                     else:
                         process.terminate()
@@ -125,6 +135,7 @@ def _run_docker_with_progress(
                     try:
                         if os.name == "posix":
                             import signal
+
                             os.killpg(process.pid, signal.SIGKILL)
                         else:
                             process.kill()
@@ -156,6 +167,7 @@ def _run_docker_with_progress(
             stderr=stderr or "Repository verification timed out.",
         )
 
+    logger.debug("Full-repo Docker command exited with code=%s", process.returncode)
     return process.returncode, stdout, stderr
 
 
@@ -176,8 +188,10 @@ def _ensure_docker_image(
         )
 
         if inspect.returncode == 0:
+            logger.debug("Docker base image %s found locally", python_image)
             return True, ""
 
+        logger.info("Pulling Docker base image %s (timeout=%ds)", python_image, timeout)
         pull = subprocess.run(
             [docker, "pull", python_image],
             capture_output=True,
@@ -187,19 +201,22 @@ def _ensure_docker_image(
         )
 
         if pull.returncode != 0:
-            return (
-                False,
+            err_msg = (
                 pull.stderr.strip()
                 or pull.stdout.strip()
-                or "Docker could not pull the base image.",
+                or "Docker could not pull the base image."
             )
+            logger.error("Failed pulling Docker base image %s: %s", python_image, err_msg)
+            return False, err_msg
 
         return True, ""
 
     except subprocess.TimeoutExpired:
+        logger.error("Docker base-image pull timed out for %s", python_image)
         return False, "Docker base-image pull timed out."
 
     except OSError as exc:
+        logger.error("OS error checking/pulling Docker image %s: %s", python_image, exc)
         return False, str(exc)
 
 
@@ -232,9 +249,10 @@ def _remove_container(
             timeout=30,
             check=False,
         )
+        logger.debug("Removed container %s from cidfile %s", container_id, container_id_file)
 
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.debug("Failed removing container from %s: %s", container_id_file, exc)
 
 
 def _print_failure_summary(
@@ -243,18 +261,19 @@ def _print_failure_summary(
     stdout: str,
     stderr: str,
 ) -> None:
-    """Print a concise failure summary."""
+    """Log and report a concise failure summary."""
 
-    print(
-        f"[ERROR] Full-repo verification failed "
-        f"(status={status}, exit_code={returncode})."
+    summary = (
+        f"Full-repo verification failed (status={status}, exit_code={returncode})."
     )
+    error(summary)
+    logger.error(summary)
 
     combined = (stderr or stdout or "").strip()
 
     if combined:
         tail = "\n".join(combined.splitlines()[-25:])
-        print(tail)
+        logger.debug("Full-repo verification failure tail:\n%s", tail)
 
 
 def _classify_verification_output(
@@ -302,15 +321,15 @@ def verify_full_repo_in_docker(
     Verify the assembled migrated repository inside Docker.
 
     Workflow:
-        1. Validate input paths.
-        2. Ensure Docker and the base image are available.
-        3. Copy the original repository into a temporary directory.
-        4. Overlay migrated files.
-        5. Install target requirements.
-        6. Run AST syntax checks.
-        7. Run the configured test command.
-        8. Retry with bridge networking only when network_mode="auto" and
-           offline execution hits a recognisable network failure.
+    1. Validate input paths.
+    2. Ensure Docker and the base image are available.
+    3. Copy the original repository into a temporary directory.
+    4. Overlay migrated files.
+    5. Install target requirements.
+    6. Run AST syntax checks.
+    7. Run the configured test command.
+    8. Retry with bridge networking only when network_mode="auto" and
+       offline execution hits a recognisable network failure.
 
     PASS means the configured verification steps passed.
     It does not prove behavioural equivalence.
@@ -455,11 +474,17 @@ def verify_full_repo_in_docker(
     temp_dir = tempfile.mkdtemp(prefix="aston_verify_")
     verification_repo = Path(temp_dir) / "repo"
 
-    try:
-        # --------------------------------------------------
-        # 1. Copy original repository
-        # --------------------------------------------------
+    logger.debug(
+        "Starting full-repo verification (repo=%s, staging=%s, image=%s, network_mode=%s, test_cmd=%r)",
+        repo_path,
+        migration_path,
+        python_image,
+        requested_network,
+        test_cmd,
+    )
 
+    try:
+        # 1. Copy original repository
         shutil.copytree(
             repo_path,
             verification_repo,
@@ -480,12 +505,8 @@ def verify_full_repo_in_docker(
             ),
         )
 
-        # --------------------------------------------------
         # 2. Overlay migrated files
-        # --------------------------------------------------
-
         for migrated_file in migration_path.rglob("*"):
-
             if not migrated_file.is_file():
                 continue
 
@@ -507,19 +528,13 @@ def verify_full_repo_in_docker(
                 destination,
             )
 
-        # --------------------------------------------------
         # 3. Replace target requirements
-        # --------------------------------------------------
-
         shutil.copy2(
             requirements_path,
             verification_repo / "requirements.txt",
         )
 
-        # --------------------------------------------------
         # 4. Construct verification script
-        # --------------------------------------------------
-
         script = r'''
 set -eu
 
@@ -631,10 +646,7 @@ echo "--- [Verification] Running test suite ---"
 echo "ASTON_VERIFICATION_PASSED"
 '''
 
-        # --------------------------------------------------
         # 5. Execute according to configured network_mode
-        # --------------------------------------------------
-
         if requested_network == "none":
             modes_to_try = ("none",)
         elif requested_network == "bridge":
@@ -643,8 +655,8 @@ echo "ASTON_VERIFICATION_PASSED"
             modes_to_try = ("none", "bridge")
 
         for mode in modes_to_try:
-
             active_network = mode
+            logger.info("Running full-repo verification container with network=%s", mode)
 
             container_id_file = (
                 Path(temp_dir)
@@ -756,16 +768,15 @@ echo "ASTON_VERIFICATION_PASSED"
                 and mode == "none"
                 and _is_network_failure(output)
             ):
+                logger.info("Offline full-repo verification hit network error; retrying in bridge mode")
                 continue
 
             # Don't retry syntax, migration, or test failures.
             break
 
-        # --------------------------------------------------
         # 6. Classify final result
-        # --------------------------------------------------
-
         output = stdout + "\n" + stderr
+        elapsed = time.monotonic() - started
 
         status = _classify_verification_output(
             output,
@@ -779,6 +790,12 @@ echo "ASTON_VERIFICATION_PASSED"
                 stdout,
                 stderr,
             )
+        else:
+            logger.info(
+                "Full-repo verification PASS in %.1fs (network=%s)",
+                elapsed,
+                active_network,
+            )
 
         return {
             "status": status,
@@ -788,7 +805,7 @@ echo "ASTON_VERIFICATION_PASSED"
             "stderr": stderr,
             "network_mode": active_network,
             "attempts": attempts,
-            "duration_seconds": time.monotonic() - started,
+            "duration_seconds": elapsed,
         }
 
     except OSError as exc:
@@ -831,9 +848,6 @@ echo "ASTON_VERIFICATION_PASSED"
 
     finally:
         if preserve_context:
-            print(
-                f"\n[ASTON DEBUG] Verification repository retained: "
-                f"{verification_repo}"
-            )
+            logger.debug("Full-repo verification repository retained at %s", verification_repo)
         else:
             shutil.rmtree(temp_dir, ignore_errors=True)

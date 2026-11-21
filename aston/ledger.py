@@ -4,6 +4,40 @@ from datetime import datetime
 from pathlib import Path
 from aston.cli.console import rich_success, warning, info, error
 
+from __future__ import annotations
+
+import logging
+from aston.config import LOGS_DIR, get_config_dir
+
+
+def setup_logging(verbose: bool = False, quiet: bool = False) -> Path:
+    """Configure file logging under ~/.config/aston/logs/ and console output."""
+    get_config_dir()
+    log_file = LOGS_DIR / "aston.log"
+
+    root_logger = logging.getLogger("aston")
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.handlers.clear()
+
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    root_logger.addHandler(file_handler)
+
+    stream_handler = logging.StreamHandler()
+    if quiet:
+        stream_handler.setLevel(logging.ERROR)
+    elif verbose:
+        stream_handler.setLevel(logging.DEBUG)
+    else:
+        stream_handler.setLevel(logging.WARNING)
+    stream_handler.setFormatter(logging.Formatter("%(message)s"))
+    root_logger.addHandler(stream_handler)
+
+    return log_file
+
 def get_notification_log_path(repo_root: Path) -> Path:
     """Resolve path to the local notification ledger inside .aston/"""
     aston_dir = repo_root / ".aston"
