@@ -5,18 +5,223 @@ migration rule is semantically correct.
 """
 
 from __future__ import annotations
+
 import json
+import logging
+import os
+import queue
+import signal
 import subprocess
 import tempfile
+import threading
+import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
+
+from aston.cli_ui.rich import console
+
+logger = logging.getLogger(__name__)
+
+_PROJECT_ROOT_MARKERS = (
+    ".git",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    ".aston",
+)
+
+
+def _decode_output(value: str | bytes | None) -> str:
+    """Safely decode subprocess output that may be str, bytes, or None."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _write_debug_artifact(
+    base_dir: Path,
+    pkg_name: str,
+    target_version: str,
+    content: str,
+) -> Path | None:
+    """Persist Docker/worker stdout, stderr, and diagnostics under .aston/debug."""
+    try:
+        debug_dir = base_dir / ".aston" / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        safe_pkg = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in pkg_name)
+        safe_ver = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in target_version)
+        artifact_path = debug_dir / f"rule_validation_{safe_pkg}_{safe_ver}_{timestamp}.log"
+        artifact_path.write_text(content, encoding="utf-8")
+        return artifact_path
+    except OSError as exc:
+        logger.debug("Could not write debug artifact for %s==%s: %s", pkg_name, target_version, exc)
+        return None
+
+
+def _run_container_with_progress(
+    command: list[str],
+    pkg_name: str,
+    target_version: str,
+    timeout: int,
+) -> tuple[int, str, str, bool]:
+    """Execute validation container with a progress bar while suppressing terminal text."""
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        start_new_session=(os.name == "posix"),
+    )
+
+    events: queue.Queue[tuple[str, str | None]] = queue.Queue()
+    outputs: dict[str, list[str]] = {"stdout": [], "stderr": []}
+
+    def _read_stream(stream_name: str, pipe) -> None:
+        try:
+            if pipe is None:
+                return
+            for line in iter(pipe.readline, ""):
+                events.put((stream_name, line))
+        finally:
+            if pipe is not None:
+                pipe.close()
+            events.put((stream_name, None))
+
+    threads = [
+        threading.Thread(target=_read_stream, args=("stdout", process.stdout), daemon=True),
+        threading.Thread(target=_read_stream, args=("stderr", process.stderr), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    start_time = time.monotonic()
+    total_timeout = max(1, timeout)
+    deadline = start_time + total_timeout
+    finished_streams = 0
+    timed_out = False
+    phase_label = f"Validating {pkg_name}=={target_version}"
+
+    with Progress(
+        SpinnerColumn(style="green"),
+        TextColumn("[bold cyan]{task.description}[/bold cyan]"),
+        BarColumn(),
+        TextColumn("{task.percentage:>3.0f}%"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        task_id = progress.add_task(phase_label, total=total_timeout)
+
+        while finished_streams < 2:
+            remaining = deadline - time.monotonic()
+
+            if remaining <= 0 and process.poll() is None and not timed_out:
+                timed_out = True
+                logger.warning(
+                    "Target validation Docker run timed out after %ds for %s==%s; terminating process",
+                    total_timeout,
+                    pkg_name,
+                    target_version,
+                )
+                try:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGTERM)
+                    else:
+                        process.terminate()
+                    process.wait(timeout=5)
+                except (subprocess.TimeoutExpired, ProcessLookupError):
+                    try:
+                        if os.name == "posix":
+                            os.killpg(process.pid, signal.SIGKILL)
+                        else:
+                            process.kill()
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+
+            try:
+                stream_name, line = events.get(
+                    timeout=0.1 if timed_out else max(0.01, min(0.25, remaining))
+                )
+            except queue.Empty:
+                progress.update(
+                    task_id,
+                    description=phase_label,
+                    completed=min(total_timeout, time.monotonic() - start_time),
+                )
+                continue
+
+            if line is None:
+                finished_streams += 1
+            else:
+                outputs[stream_name].append(line)
+                stripped = line.strip()
+                if stripped == "ASTON_REQUIREMENTS_INSTALL_START":
+                    phase_label = f"Installing requirements ({pkg_name}=={target_version})"
+                elif stripped == "ASTON_TARGET_UPGRADE_START":
+                    phase_label = f"Upgrading {pkg_name}=={target_version}"
+                elif stripped == "ASTON_PACKAGE_IMPORT_START":
+                    phase_label = f"Probing {pkg_name}=={target_version}"
+
+                progress.update(
+                    task_id,
+                    description=phase_label,
+                    completed=min(total_timeout, time.monotonic() - start_time),
+                )
+
+    for thread in threads:
+        thread.join()
+
+    returncode = process.wait()
+    return (
+        returncode,
+        "".join(outputs["stdout"]),
+        "".join(outputs["stderr"]),
+        timed_out,
+    )
+
+
+def _resolve_project_mount_root(req_path: Path) -> tuple[Path, str]:
+    """Resolve the host directory to mount at /project and the container req path."""
+    parent = req_path.parent.resolve()
+    for candidate in (parent, *parent.parents):
+        if any((candidate / marker).exists() for marker in _PROJECT_ROOT_MARKERS):
+            try:
+                rel_req = req_path.relative_to(candidate)
+                return candidate, f"/project/{rel_req.as_posix()}"
+            except ValueError:
+                break
+
+    logger.warning(
+        "Could not identify project root for %s; mounting requirements directory %s. "
+        "Relative references outside this directory may fail.",
+        req_path,
+        parent,
+    )
+    return parent, f"/project/{req_path.name}"
+
 
 def _mark_unprobed(rule: dict[str, Any], reason: str) -> dict[str, Any]:
-    """Mark a rule as not runtime-validated without discarding its evidence."""
+    """Mark a rule as not runtime-validated while preserving its prior status."""
     rule["target_api_status"] = "unprobed"
-    rule["validation_status"] = "not_validated"
+    rule["validation_status"] = rule.get(
+        "documentation_validation_status",
+        "not_validated",
+    )
     rule["resolution_reason"] = reason
     return rule
 
@@ -30,8 +235,11 @@ def _mark_pending_as_failed(
     """Give every rule whose API probe did not finish an explicit outcome."""
     for rule in rules:
         if rule.get("target_api_status") == "pending":
+            doc_status = rule.get("documentation_validation_status", "not_validated")
             rule["target_api_status"] = status
-            rule["validation_status"] = "unverifiable"
+            rule["validation_status"] = (
+                "needs_review" if doc_status == "validated" else doc_status
+            )
             rule["resolution_reason"] = reason
     return rules
 
@@ -66,6 +274,13 @@ def validate_all_rules(
     groups: dict[tuple[str, str], list[tuple[int, dict[str, Any]]]] = defaultdict(list)
     result_by_index: dict[int, dict[str, Any]] = {}
 
+    logger.debug(
+        "Grouping %d rule(s) for target validation (req_file=%s, image=%s)",
+        len(all_rules),
+        req_path,
+        python_image,
+    )
+
     for index, original in enumerate(all_rules):
         rule = dict(original)
         # Keep the original documentation/rule assessment separate from the
@@ -81,6 +296,7 @@ def validate_all_rules(
 
         package = rule.get("package")
         if not package:
+            logger.debug("Rule at index %d has no package identifier; marking unprobed", index)
             result_by_index[index] = _mark_unprobed(
                 rule, "Rule has no package identifier"
             )
@@ -88,6 +304,11 @@ def validate_all_rules(
 
         target_version = all_target_versions.get(package)
         if not target_version:
+            logger.debug(
+                "No target version configured for package %s (rule index %d); marking unprobed",
+                package,
+                index,
+            )
             result_by_index[index] = _mark_unprobed(
                 rule, f"No target version configured for import package {package}"
             )
@@ -96,19 +317,38 @@ def validate_all_rules(
         groups[(package, str(target_version))].append((index, rule))
 
     for (package, target_version), indexed_rules in groups.items():
+        logger.info(
+            "Validating %d rule(s) for %s==%s in Docker",
+            len(indexed_rules),
+            package,
+            target_version,
+        )
+        group_target_versions = {package: target_version}
+        group_dist_names = (
+            {package: distribution_names[package]}
+            if package in distribution_names
+            else {}
+        )
         validated = validate_rules_against_target(
             rules=[rule for _, rule in indexed_rules],
             pkg_name=package,
             target_version=target_version,
-            all_target_versions=all_target_versions,
+            all_target_versions=group_target_versions,
             req_file=req_path,
             distribution_name=distribution_names.get(package),
-            distribution_names=distribution_names,
+            distribution_names=group_dist_names,
             python_image=python_image,
             timeout=timeout,
         )
 
         if len(validated) != len(indexed_rules):
+            logger.error(
+                "Validator count mismatch for %s==%s: expected %d, got %d",
+                package,
+                target_version,
+                len(indexed_rules),
+                len(validated),
+            )
             raise RuntimeError(
                 f"Rule validator returned {len(validated)} rules for "
                 f"{len(indexed_rules)} inputs for {package}=={target_version}. "
@@ -148,12 +388,25 @@ def reconcile_report(
         for rule in validated_rules
     )
     report["not_probed_rules"] = sum(
-        rule.get("target_api_status") in {"pending", "unprobed"}
+        rule.get("target_api_status") in {
+            "pending",
+            "unprobed",
+            "probe_failed",
+        }
         for rule in validated_rules
     )
     report["documentation_validated_rules"] = sum(
         rule.get("documentation_validation_status") == "validated"
         for rule in validated_rules
+    )
+
+    logger.debug(
+        "Reconciled rule report: total=%d exists=%d missing=%d unverifiable=%d doc_validated=%d",
+        report["total_rules"],
+        report["target_api_exists"],
+        report["target_api_missing"],
+        report["unverifiable_rules"],
+        report["documentation_validated_rules"],
     )
     return report
 
@@ -194,7 +447,11 @@ def validate_rules_against_target(
         candidate = rule.get("candidate_new_api") or rule.get("new_api")
         rule["candidate_new_api"] = candidate
 
-        if not isinstance(candidate, str) or not candidate.strip() or "UNRESOLVED" in candidate.upper():
+        if (
+            not isinstance(candidate, str)
+            or not candidate.strip()
+            or "UNRESOLVED" in candidate.upper()
+        ):
             rule["target_api_status"] = "unverifiable"
             rule["validation_status"] = "not_validated"
             rule["resolution_reason"] = (
@@ -210,18 +467,31 @@ def validate_rules_against_target(
         return []
 
     if not req_path.is_file():
+        logger.warning("Requirements file not found for target validation: %s", req_path)
         return _mark_pending_as_failed(
             prepared_rules,
             f"Requirements file not found: {req_path}",
             status="unprobed",
         )
 
+    project_mount_dir, container_req_path = _resolve_project_mount_root(req_path)
+    debug_base_dir = Path.cwd().resolve()
+
     # The worker installs distribution names but imports and probes Python
     # import names. The version map sent to it is keyed by distribution name.
     install_version_map: dict[str, str] = {}
     for import_name, version in all_target_versions.items():
         dist_name = distribution_names.get(import_name, import_name)
-        if dist_name in install_version_map and install_version_map[dist_name] != version:
+        if (
+            dist_name in install_version_map
+            and install_version_map[dist_name] != version
+        ):
+            logger.error(
+                "Conflicting target versions for distribution %r: %r vs %r",
+                dist_name,
+                install_version_map[dist_name],
+                version,
+            )
             raise ValueError(
                 f"Conflicting target versions for distribution {dist_name!r}: "
                 f"{install_version_map[dist_name]!r} and {version!r}"
@@ -233,6 +503,7 @@ import importlib
 import json
 import subprocess
 import sys
+import time
 
 requirements_path, import_name, version_map_json, rules_path = sys.argv[1:5]
 version_map = json.loads(version_map_json)
@@ -240,12 +511,21 @@ version_map = json.loads(version_map_json)
 
 def install(args):
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", *args],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--default-timeout=120",
+            "--retries=5",
+            "--progress-bar=off",
+            *args,
+        ],
         capture_output=True,
         text=True,
     )
     if result.returncode:
-        raise RuntimeError("pip install failed:\\n" + result.stderr[-12000:])
+        raise RuntimeError("pip install failed:\n" + result.stderr[-12000:])
 
 
 def resolve_attribute(root, path):
@@ -262,9 +542,13 @@ def probe_api(module, api):
         return "unverifiable", "No usable candidate API"
     api = api.strip()
 
-    # Handle client-bound instance methods by checking the rest of the attribute path
-    if api.startswith("client."):
-        api = api[len("client."):]  # e.g., "client.completions.create" -> "completions.create"
+    # Instance-bound paths (e.g., client.chat.completions.create) live on an
+    # instantiated client rather than the top-level package module.
+    if api == "client" or api.startswith("client."):
+        return (
+            "unverifiable",
+            "Instance-bound API requires instantiated client context",
+        )
 
     if api == import_name:
         path = ""
@@ -286,12 +570,28 @@ def probe_api(module, api):
 
 
 try:
-    # Install the project's base environment, then pin all target distributions.
+    # Install the project's base environment, then pin target distributions.
+    print("ASTON_REQUIREMENTS_INSTALL_START", file=sys.stderr, flush=True)
+    t0 = time.monotonic()
     install(["-r", requirements_path])
+    print(
+        f"ASTON_REQUIREMENTS_INSTALL_SECONDS={time.monotonic() - t0:.2f}",
+        file=sys.stderr,
+        flush=True,
+    )
+
     upgrade_args = ["--upgrade", "--upgrade-strategy", "only-if-needed"]
     for dist_name, version in version_map.items():
         upgrade_args.append(f"{dist_name}=={version}")
+
+    print("ASTON_TARGET_UPGRADE_START", file=sys.stderr, flush=True)
+    t1 = time.monotonic()
     install(upgrade_args)
+    print(
+        f"ASTON_TARGET_UPGRADE_SECONDS={time.monotonic() - t1:.2f}",
+        file=sys.stderr,
+        flush=True,
+    )
 
     check = subprocess.run(
         [sys.executable, "-m", "pip", "check"],
@@ -301,13 +601,20 @@ try:
     if check.returncode:
         print(json.dumps({
             "environment_status": "dependency_conflict",
-            "details": (check.stdout + "\\n" + check.stderr)[-12000:],
+            "details": (check.stdout + "\n" + check.stderr)[-12000:],
             "rules": [],
         }))
         sys.exit(0)
 
     try:
+        print("ASTON_PACKAGE_IMPORT_START", file=sys.stderr, flush=True)
+        t2 = time.monotonic()
         module = importlib.import_module(import_name)
+        print(
+            f"ASTON_PACKAGE_IMPORT_SECONDS={time.monotonic() - t2:.2f}",
+            file=sys.stderr,
+            flush=True,
+        )
     except Exception as exc:
         print(json.dumps({
             "environment_status": "import_failed",
@@ -322,7 +629,11 @@ try:
     results = []
     for index, rule in enumerate(rules):
         candidate = rule.get("candidate_new_api") or rule.get("new_api")
-        if not isinstance(candidate, str) or not candidate.strip() or "UNRESOLVED" in candidate.upper():
+        if (
+            not isinstance(candidate, str)
+            or not candidate.strip()
+            or "UNRESOLVED" in candidate.upper()
+        ):
             results.append({
                 "index": index,
                 "status": "unverifiable",
@@ -343,54 +654,130 @@ except Exception as exc:
 
     with tempfile.TemporaryDirectory(prefix="aston-validation-") as tmp:
         temp_dir = Path(tmp)
+        os.chmod(temp_dir, 0o755)
         script_path = temp_dir / "validate.py"
         rules_path = temp_dir / "rules.json"
         script_path.write_text(worker_script, encoding="utf-8")
         rules_path.write_text(json.dumps(prepared_rules), encoding="utf-8")
+        os.chmod(script_path, 0o644)
+        os.chmod(rules_path, 0o644)
 
         command = [
-            "docker", "run", "--rm",
-            "-v", f"{req_path.parent}:/project:ro",
-            "-v", f"{temp_dir}:/work",  # Removed :ro so container can write/execute cleanly            "-w", "/work",
+            "docker",
+            "run",
+            "--rm",
+            "-e",
+            "PIP_CACHE_DIR=/root/.cache/pip",
+            "-v",
+            "aston-pip-cache:/root/.cache/pip:Z",
+            "-v",
+            f"{project_mount_dir}:/project:ro,Z",
+            "-v",
+            f"{temp_dir}:/work:Z",
+            "-w",
+            "/work",
             python_image,
-            "python", "/work/validate.py",
-            f"/project/{req_path.name}",
+            "python",
+            "/work/validate.py",
+            container_req_path,
             pkg_name,
             json.dumps(install_version_map),
             "/work/rules.json",
         ]
+        logger.debug("Executing target validation Docker container for %s==%s", pkg_name, target_version)
 
         try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
+            returncode, stdout_text, stderr_text, timed_out = _run_container_with_progress(
+                command=command,
+                pkg_name=pkg_name,
+                target_version=target_version,
                 timeout=timeout,
             )
-        except subprocess.TimeoutExpired:
-            return _mark_pending_as_failed(
-                prepared_rules, f"Validation timed out after {timeout} seconds"
-            )
         except OSError as exc:
+            logger.error("Failed starting Docker target validation for %s: %s", pkg_name, exc)
             return _mark_pending_as_failed(
                 prepared_rules, f"Could not start Docker validation: {exc}"
             )
 
-        if result.returncode != 0:
-            details = (result.stderr or result.stdout or "No Docker output")[-4000:]
+        out_str = _decode_output(stdout_text)
+        err_str = _decode_output(stderr_text)
+        combined_debug = f"=== STDERR ===\n{err_str}\n\n=== STDOUT ===\n{out_str}"
+
+        if timed_out:
+            artifact = _write_debug_artifact(
+                debug_base_dir, pkg_name, target_version, combined_debug
+            )
+            logger.warning(
+                "Target validation Docker run timed out after %ds for %s==%s (debug_log=%s)",
+                timeout,
+                pkg_name,
+                target_version,
+                artifact,
+            )
             return _mark_pending_as_failed(
-                prepared_rules, f"Docker validation failed: {details}"
+                prepared_rules, f"Validation timed out after {timeout} seconds"
+            )
+
+        if err_str:
+            artifact = _write_debug_artifact(
+                debug_base_dir, pkg_name, target_version, combined_debug
+            )
+            logger.debug(
+                "Target validation diagnostics for %s==%s saved to %s",
+                pkg_name,
+                target_version,
+                artifact,
+            )
+
+        if returncode != 0:
+            artifact = _write_debug_artifact(
+                debug_base_dir, pkg_name, target_version, combined_debug
+            )
+            logger.error(
+                "Docker target validation exited with rc=%d for %s==%s (debug_log=%s)",
+                returncode,
+                pkg_name,
+                target_version,
+                artifact,
+            )
+            return _mark_pending_as_failed(
+                prepared_rules, f"Docker validation failed (rc={returncode})"
             )
 
         try:
-            report = json.loads(result.stdout.strip().splitlines()[-1])
-        except (IndexError, json.JSONDecodeError):
+            report = json.loads(out_str.strip().splitlines()[-1])
+        except (IndexError, json.JSONDecodeError) as exc:
+            artifact = _write_debug_artifact(
+                debug_base_dir, pkg_name, target_version, combined_debug
+            )
+            logger.error(
+                "Failed parsing Docker target validation output for %s==%s (%s; debug_log=%s)",
+                pkg_name,
+                target_version,
+                exc,
+                artifact,
+            )
             return _mark_pending_as_failed(
                 prepared_rules, "Could not parse Docker validation report"
             )
 
     if report.get("environment_status") != "ready":
-        details = report.get("details", report.get("environment_status", "unknown error"))
+        details = report.get(
+            "details", report.get("environment_status", "unknown error")
+        )
+        artifact = _write_debug_artifact(
+            debug_base_dir,
+            pkg_name,
+            target_version,
+            f"{combined_debug}\n\n=== REPORT ===\n{json.dumps(report, indent=2)}",
+        )
+        logger.warning(
+            "Target validation worker environment_status=%s for %s==%s (debug_log=%s)",
+            report.get("environment_status"),
+            pkg_name,
+            target_version,
+            artifact,
+        )
         return _mark_pending_as_failed(prepared_rules, str(details))
 
     seen_indices: set[int] = set()
@@ -410,7 +797,8 @@ except Exception as exc:
             rule["target_api_status"] = "target_api_exists"
             # Runtime existence is necessary but not sufficient for rule validity.
             rule["validation_status"] = (
-                "validated" if documentation_status == "validated"
+                "validated"
+                if documentation_status == "validated"
                 else documentation_status
             )
         elif status == "missing":
@@ -419,7 +807,8 @@ except Exception as exc:
         else:
             rule["target_api_status"] = "unverifiable"
             rule["validation_status"] = (
-                "needs_review" if documentation_status == "validated"
+                "needs_review"
+                if documentation_status == "validated"
                 else documentation_status
             )
 
@@ -429,6 +818,12 @@ except Exception as exc:
     # A malformed/partial worker report must not leave any rule pending.
     for index, rule in enumerate(prepared_rules):
         if index not in seen_indices and rule.get("target_api_status") == "pending":
+            logger.warning(
+                "Rule index %d missing from target validation report for %s==%s",
+                index,
+                pkg_name,
+                target_version,
+            )
             rule["target_api_status"] = "probe_failed"
             rule["validation_status"] = "unverifiable"
             rule["resolution_reason"] = "Rule missing from Docker validation report"

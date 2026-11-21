@@ -7,6 +7,7 @@ The chain includes:
   are not silently missed.
 """
 
+import logging
 import os
 import re
 from typing import Any
@@ -14,9 +15,11 @@ from typing import Any
 import requests
 from packaging.version import InvalidVersion, Version
 from requests.exceptions import RequestException
+
 from aston.exceptions import ConfigurationError
 from aston.Utils.utility import request_with_backoff
 
+logger = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
 MAX_TAG_PAGES = 30
@@ -47,17 +50,28 @@ def get_release_tags(repo: str) -> list[dict[str, Any]]:
     that an empty result means there are no version tags."""
     tags: list[dict[str, Any]] = []
     headers = _github_headers()
+    logger.debug("Fetching release tags for GitHub repository %s", repo)
 
     for page in range(1, MAX_TAG_PAGES + 1):
-        response = request_with_backoff(
-            "GET",
-            f"{GITHUB_API}/repos/{repo}/tags",
-            max_retries=3,
-            backoff_factor=2.0,
-            params={"per_page": 100, "page": page},
-            headers=headers,
-        )
-        response.raise_for_status()
+        try:
+            response = request_with_backoff(
+                "GET",
+                f"{GITHUB_API}/repos/{repo}/tags",
+                max_retries=3,
+                backoff_factor=2.0,
+                params={"per_page": 100, "page": page},
+                headers=headers,
+            )
+            response.raise_for_status()
+        except RequestException as exc:
+            logger.error(
+                "Failed fetching release tags for %s on page %d: %s",
+                repo,
+                page,
+                exc,
+            )
+            raise
+
         batch = response.json()
         if not batch:
             break
@@ -81,7 +95,14 @@ def get_release_tags(repo: str) -> list[dict[str, Any]]:
         ):
             by_version[tag["version"]] = tag
 
-    return sorted(by_version.values(), key=lambda item: item["version"])
+    sorted_tags = sorted(by_version.values(), key=lambda item: item["version"])
+    logger.debug(
+        "Resolved %d unique versioned tag(s) for %s (from %d raw tag(s))",
+        len(sorted_tags),
+        repo,
+        len(tags),
+    )
+    return sorted_tags
 
 
 def get_migration_chain(
@@ -100,17 +121,26 @@ def get_migration_chain(
         old_v = Version(old_version)
         new_v = Version(new_version)
     except InvalidVersion as exc:
+        logger.error(
+            "Invalid version range for %s: %r -> %r (%s)",
+            repo,
+            old_version,
+            new_version,
+            exc,
+        )
         raise ConfigurationError(
             message=f"Invalid package version range specified: {old_version!r} -> {new_version!r}",
             details="Provide valid semantic version strings for package upgrade boundaries."
         ) from exc
 
     if new_v < old_v:
+        logger.error("Unsupported downgrade target for %s: %s -> %s", repo, old_v, new_v)
         raise ConfigurationError(
             message=f"Target version {new_v} is older than installed version {old_v}.",
             details="ASTon upgrades packages forward; downgrade migration targets are unsupported."
         )
     if new_v == old_v:
+        logger.debug("No version delta for %s (%s == %s); returning empty migration chain", repo, old_v, new_v)
         return []
 
     tags = get_release_tags(repo)
@@ -139,8 +169,14 @@ def get_migration_chain(
     if target_tag not in chain:
         chain.append(target_tag)
 
+    logger.info(
+        "Resolved migration chain for %s (%s -> %s): %s",
+        repo,
+        old_v,
+        new_v,
+        chain,
+    )
     return chain
-
 
 
 def merge_rule_chain(rulesets_in_order: list[list[dict]]) -> list[dict]:
@@ -156,6 +192,7 @@ def merge_rule_chain(rulesets_in_order: list[list[dict]]) -> list[dict]:
     - Keep the earliest from_version and latest to_version.
     """
     merged: list[dict] = []
+    logger.debug("Composing rule chain across %d boundary ruleset(s)", len(rulesets_in_order))
 
     def clean_symbol(value: Any) -> str | None:
         if not isinstance(value, str):
@@ -188,7 +225,7 @@ def merge_rule_chain(rulesets_in_order: list[list[dict]]) -> list[dict]:
 
         return "needs_review"
 
-    for ruleset in rulesets_in_order:
+    for step_idx, ruleset in enumerate(rulesets_in_order):
         incoming_rules = []
 
         for source in ruleset:
@@ -335,5 +372,12 @@ def merge_rule_chain(rulesets_in_order: list[list[dict]]) -> list[dict]:
                 next_merged.append(dict(rule))
 
         merged = next_merged
+        logger.debug(
+            "After boundary step %d: %d composed rule(s) (%d consumed as continuations)",
+            step_idx,
+            len(merged),
+            len(consumed_indices),
+        )
 
+    logger.debug("Finished composing rule chain: %d total rule(s)", len(merged))
     return merged

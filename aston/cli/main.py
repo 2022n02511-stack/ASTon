@@ -17,19 +17,43 @@ from aston.cli.commands import (
 )
 from aston.config import load_config, set_runtime_config
 from aston.ledger import log_notification, show_notifications
+from aston.Utils.guard import _has_completed_migration
+import logging
+
+logger = logging.getLogger(__name__)
+from aston.ledger import setup_logging
+from aston.report import load_migration_report, render_migration_report
 
 
 def main():
+    common_parser = argparse.ArgumentParser(add_help=False)
+    common_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Show detailed debug logs in the terminal",
+    )
+    common_parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Suppress non-error terminal output",
+    )
+
     parser = argparse.ArgumentParser(
         prog="aston",
-        description="ASTon: Automated repo analyzer and migration CLI tool."
+        description="ASTon: Automated repo analyzer and migration CLI tool.",
+        parents=[common_parser],
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Init command
     init_parser = subparsers.add_parser(
         "init",
-        help="Initialize ASTon workspace and .gitignore protection"
+        help="Initialize ASTon workspace and .gitignore protection",
+        parents=[common_parser],
     )
     init_parser.add_argument(
         "--path",
@@ -113,6 +137,11 @@ def main():
         help="Execute migration if breaking changes are found"
     )
     check_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-run migration even if a completed migration already exists in .aston",
+    )
+    check_parser.add_argument(
         "--path",
         type=str,
         default=None,
@@ -153,6 +182,42 @@ def main():
         type=int,
         default=None,
         help="Docker timeout in seconds for repo-wide tests",
+    )
+    check_parser.add_argument(
+    "--no-verify",
+    action="store_true",
+    help="Disable Docker verification for this run",
+    )
+    check_parser.add_argument(
+        "--python-image",
+        type=str,
+        default=None,
+        help="Override Docker Python image (e.g., python:3.11-slim)",
+    )
+    check_parser.add_argument(
+        "--network-mode",
+        type=str,
+        choices=["auto", "none", "bridge"],
+        default=None,
+        help="Override container network mode (auto, none, bridge)",
+    )
+    check_parser.add_argument(
+        "--requirements-file",
+        type=str,
+        default=None,
+        help="Override requirements file path",
+    )
+    check_parser.add_argument(
+        "--test-command",
+        type=str,
+        default=None,
+        help="Override repository test command",
+    )
+    check_parser.add_argument(
+        "--build-timeout",
+        type=int,
+        default=None,
+        help="Docker timeout in seconds for image builds",
     )
 
     # Watcher command
@@ -229,9 +294,39 @@ def main():
         help="Repository directory (defaults to CWD discovery)",
     )
 
+    # Report command
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Show summary report for a migration run",
+        parents=[common_parser],
+    )
+    report_parser.add_argument(
+        "--path",
+        type=str,
+        default=None,
+        help="Target repository directory (defaults to CWD discovery)",
+    )
+    report_parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Specific run ID to display (defaults to latest run)",
+    )
+    report_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output the full report as JSON",
+    )
+
     args = parser.parse_args()
 
     try:
+        log_file = setup_logging(
+            verbose=getattr(args, "verbose", False),
+            quiet=getattr(args, "quiet", False),
+        )
+        logger.debug("Logging initialized at %s for command '%s'", log_file, args.command)
+
         # Helper to resolve repo path dynamically for any command
         def get_target_repo():
             return Path(args.path).expanduser().resolve() if args.path else find_repo_root()
@@ -264,19 +359,56 @@ def main():
             repo_path = Path(args.path).expanduser().resolve() if args.path else find_repo_root()
             handle_doctor(test_llm=args.test_llm, repo_path=repo_path)
 
+        elif args.command == "report":
+            repo_path = get_target_repo()
+            logger.debug(
+                "Loading migration report for repo=%s run_id=%s as_json=%s",
+                repo_path,
+                args.run_id,
+                args.json,
+            )
+            report_data, report_path = load_migration_report(
+                repo_root=repo_path,
+                run_id=args.run_id,
+            )
+            render_migration_report(
+                report=report_data,
+                report_path=report_path,
+                as_json=args.json,
+            )    
+
         elif args.command == "check":
             repo_path = get_target_repo()
-            
-            config = load_config()
+            config = load_config(repo_path)
             mig_config = config.get("migration", {})
             llm_config = config.get("llm", {})
+            ver_config = config.get("verification", {})
 
             provider_name = args.provider or llm_config.get("provider", "mistral")
             model_name = args.model or llm_config.get("model", "codestral-latest")
             per_file_retries = args.repair_retries if args.repair_retries is not None else mig_config.get("per_file_repair_retries", 3)
             sweep_passes = args.sweep_passes if args.sweep_passes is not None else mig_config.get("failed_files_sweep_passes", 2)
-            file_timeout = args.file_timeout if args.file_timeout is not None else mig_config.get("docker_file_timeout_seconds", 300)
-            repo_timeout = args.repo_timeout if args.repo_timeout is not None else mig_config.get("docker_repo_timeout_seconds", 300)
+
+            ver_enabled = False if args.no_verify else ver_config.get("enabled", True)
+            python_image = args.python_image or ver_config.get("python_image", "python:3.11-slim")
+            network_mode = args.network_mode or ver_config.get("network_mode", "auto")
+            req_file = args.requirements_file or ver_config.get("requirements_file", "requirements.txt")
+            test_cmd = args.test_command if args.test_command is not None else ver_config.get("test_command", "python -m pytest -q")
+            file_timeout = (
+                args.file_timeout
+                if args.file_timeout is not None
+                else ver_config.get("file_timeout", mig_config.get("docker_file_timeout_seconds", 300))
+            )
+            repo_timeout = (
+                args.repo_timeout
+                if args.repo_timeout is not None
+                else ver_config.get("repo_timeout", mig_config.get("docker_repo_timeout_seconds", 300))
+            )
+            build_timeout = (
+                args.build_timeout
+                if args.build_timeout is not None
+                else ver_config.get("build_timeout", 600)
+            )
 
             set_runtime_config({
                 "llm": {
@@ -288,10 +420,25 @@ def main():
                     "failed_files_sweep_passes": sweep_passes,
                     "docker_file_timeout_seconds": file_timeout,
                     "docker_repo_timeout_seconds": repo_timeout,
-                }
+                },
+                "verification": {
+                    "enabled": ver_enabled,
+                    "python_image": python_image,
+                    "network_mode": network_mode,
+                    "requirements_file": req_file,
+                    "test_command": test_cmd,
+                    "file_timeout": file_timeout,
+                    "repo_timeout": repo_timeout,
+                    "build_timeout": build_timeout,
+                },
             })
 
             if args.run:
+                if not args.force and _has_completed_migration(repo_path):
+                    warning("An existing migration was found in .aston.")
+                    info("Run `aston clean` first to clear previous migration artifacts and start fresh.")
+                    return
+
                 info("Checking git workspace status...")
                 verify_clean_git_workspace(repo_path)
 
