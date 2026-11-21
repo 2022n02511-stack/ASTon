@@ -1,32 +1,45 @@
-import subprocess
-from pathlib import Path
+
+import os
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+import tokenize
+import uuid
+
+from pathlib import Path
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 
 def _is_network_failure(output: str) -> bool:
-    """Return True only when output contains recognisable network failures."""
+    """Detect recognisable network-connectivity failures."""
 
     output = output.lower()
 
     network_markers = (
         "temporary failure in name resolution",
         "could not resolve host",
+        "could not resolve",
         "name or service not known",
         "name resolution failed",
+        "no address associated with hostname",
+        "getaddrinfo failed",
         "network is unreachable",
         "no route to host",
+        "network is down",
         "failed to establish a new connection",
         "connection timed out",
         "connect timeout",
-        "read timeout",
-        "max retries exceeded with url",
-        "connectionerror",
-        "name resolution error",
-        "network is down",
+        "connecttimeout",
+        "socket.gaierror",
+        "dns lookup",
     )
 
     return any(marker in output for marker in network_markers)
@@ -37,33 +50,48 @@ def _run_docker_with_progress(
     timeout: int,
     description: str,
 ) -> tuple[int, str, str]:
-    """Run a docker command silently with a Rich progress bar while capturing stdout and stderr."""
+    """Run Docker while capturing output and enforcing a timeout."""
+
     process = subprocess.Popen(
         docker_cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        bufsize=1,
+        start_new_session=(os.name == "posix"),
     )
 
-    stdout_chunks: list[str] = []
-    stderr_chunks: list[str] = []
+    stdout_chunks = []
+    stderr_chunks = []
 
-    def _read_stream(pipe, sink: list[str]) -> None:
+    def _read_stream(pipe, sink):
         if pipe is None:
             return
+
         try:
             for chunk in iter(lambda: pipe.read(4096), ""):
                 sink.append(chunk)
         finally:
             pipe.close()
 
-    t_out = threading.Thread(target=_read_stream, args=(process.stdout, stdout_chunks), daemon=True)
-    t_err = threading.Thread(target=_read_stream, args=(process.stderr, stderr_chunks), daemon=True)
+    t_out = threading.Thread(
+        target=_read_stream,
+        args=(process.stdout, stdout_chunks),
+        daemon=True,
+    )
+
+    t_err = threading.Thread(
+        target=_read_stream,
+        args=(process.stderr, stderr_chunks),
+        daemon=True,
+    )
+
     t_out.start()
     t_err.start()
 
     start_time = time.monotonic()
     total_timeout = max(1, timeout)
+    timed_out = False
 
     with Progress(
         SpinnerColumn(style="green"),
@@ -73,38 +101,191 @@ def _run_docker_with_progress(
         TimeElapsedColumn(),
         transient=True,
     ) as progress:
-        task_id = progress.add_task("verify", total=total_timeout)
+
+        task_id = progress.add_task(
+            "verify",
+            total=total_timeout,
+        )
 
         while process.poll() is None:
             elapsed = time.monotonic() - start_time
-            if elapsed >= total_timeout:
-                process.kill()
-                t_out.join()
-                t_err.join()
-                process.wait()
-                raise subprocess.TimeoutExpired(
-                    cmd=docker_cmd,
-                    timeout=timeout,
-                    output="".join(stdout_chunks),
-                    stderr="".join(stderr_chunks) or "Repository verification timed out.",
-                )
 
-            progress.update(task_id, completed=min(total_timeout, elapsed))
+            if elapsed >= total_timeout:
+                timed_out = True
+
+                try:
+                    if os.name == "posix":
+                        import signal
+                        os.killpg(process.pid, signal.SIGTERM)
+                    else:
+                        process.terminate()
+
+                    process.wait(timeout=5)
+
+                except (subprocess.TimeoutExpired, ProcessLookupError):
+                    try:
+                        if os.name == "posix":
+                            import signal
+                            os.killpg(process.pid, signal.SIGKILL)
+                        else:
+                            process.kill()
+                    except ProcessLookupError:
+                        pass
+
+                    process.wait()
+
+                break
+
+            progress.update(
+                task_id,
+                completed=min(total_timeout, elapsed),
+            )
+
             time.sleep(0.1)
 
-    t_out.join()
-    t_err.join()
-    returncode = process.returncode
-    return returncode, "".join(stdout_chunks), "".join(stderr_chunks)
+    t_out.join(timeout=5)
+    t_err.join(timeout=5)
+
+    stdout = "".join(stdout_chunks)
+    stderr = "".join(stderr_chunks)
+
+    if timed_out:
+        raise subprocess.TimeoutExpired(
+            cmd=docker_cmd,
+            timeout=timeout,
+            output=stdout,
+            stderr=stderr or "Repository verification timed out.",
+        )
+
+    return process.returncode, stdout, stderr
 
 
-def _print_failure_summary(status: str, returncode: int | None, stdout: str, stderr: str) -> None:
-    """Surface a concise failure summary on the terminal without dumping full logs."""
-    print(f"[ERROR] Full-repo verification failed (status={status}, exit_code={returncode}).")
+def _ensure_docker_image(
+    docker: str,
+    python_image: str,
+    timeout: int,
+) -> tuple[bool, str]:
+    """Ensure the configured base image is available locally."""
+
+    try:
+        inspect = subprocess.run(
+            [docker, "image", "inspect", python_image],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        if inspect.returncode == 0:
+            return True, ""
+
+        pull = subprocess.run(
+            [docker, "pull", python_image],
+            capture_output=True,
+            text=True,
+            timeout=max(1, timeout),
+            check=False,
+        )
+
+        if pull.returncode != 0:
+            return (
+                False,
+                pull.stderr.strip()
+                or pull.stdout.strip()
+                or "Docker could not pull the base image.",
+            )
+
+        return True, ""
+
+    except subprocess.TimeoutExpired:
+        return False, "Docker base-image pull timed out."
+
+    except OSError as exc:
+        return False, str(exc)
+
+
+def _remove_container(
+    docker: str,
+    container_id_file: Path,
+) -> None:
+    """Remove a container left behind after a timeout."""
+
+    try:
+        if not container_id_file.is_file():
+            return
+
+        container_id = container_id_file.read_text(
+            encoding="utf-8"
+        ).strip()
+
+        if not container_id:
+            return
+
+        subprocess.run(
+            [
+                docker,
+                "rm",
+                "-f",
+                container_id,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _print_failure_summary(
+    status: str,
+    returncode: int | None,
+    stdout: str,
+    stderr: str,
+) -> None:
+    """Print a concise failure summary."""
+
+    print(
+        f"[ERROR] Full-repo verification failed "
+        f"(status={status}, exit_code={returncode})."
+    )
+
     combined = (stderr or stdout or "").strip()
+
     if combined:
         tail = "\n".join(combined.splitlines()[-25:])
         print(tail)
+
+
+def _classify_verification_output(
+    output: str,
+    returncode: int,
+) -> str:
+    """Map verification output to a structured status."""
+
+    if "ASTON_SETUP_FAILED" in output:
+        return "SETUP_ERROR"
+
+    if "ASTON_PYTEST_SETUP_FAILED" in output:
+        return "SETUP_ERROR"
+
+    if "ASTON_SYNTAX_FAILED" in output:
+        return "SYNTAX_ERROR"
+
+    if "ASTON_TESTS_NO_TESTS" in output:
+        return "NO_TESTS"
+
+    if "ASTON_TESTS_FAILED" in output:
+        return "TEST_FAILED"
+
+    if "ASTON_VERIFICATION_PASSED" in output and returncode == 0:
+        return "PASS"
+
+    if _is_network_failure(output):
+        return "NETWORK_ERROR"
+
+    return "DOCKER_ERROR"
 
 
 def verify_full_repo_in_docker(
@@ -115,12 +296,29 @@ def verify_full_repo_in_docker(
     python_image: str = "python:3.11-slim",
     timeout: int = 300,
     test_command: str = "python -m pytest -q",
+    preserve_context: bool = False,
 ) -> dict:
-    """Verify the migrated repository inside an isolated Docker container with offline-first network fallback."""
+    """
+    Verify the assembled migrated repository inside Docker.
 
-    repo_path = Path(repo_root).resolve()
-    migration_path = Path(migrated_files_path).resolve()
-    requirements_path = Path(req_file).resolve()
+    Workflow:
+        1. Validate input paths.
+        2. Ensure Docker and the base image are available.
+        3. Copy the original repository into a temporary directory.
+        4. Overlay migrated files.
+        5. Install target requirements.
+        6. Run AST syntax checks.
+        7. Run the configured test command.
+        8. Retry with bridge networking only after a
+           recognisable offline network failure.
+
+    PASS means the configured verification steps passed.
+    It does not prove behavioural equivalence.
+    """
+
+    repo_path = Path(repo_root).expanduser().resolve()
+    migration_path = Path(migrated_files_path).expanduser().resolve()
+    requirements_path = Path(req_file).expanduser().resolve()
 
     if not repo_path.is_dir():
         return {
@@ -137,7 +335,9 @@ def verify_full_repo_in_docker(
             "success": False,
             "exit_code": None,
             "stdout": "",
-            "stderr": f"Migrated files directory not found: {migration_path}",
+            "stderr": (
+                f"Migrated files directory not found: {migration_path}"
+            ),
         }
 
     if not requirements_path.is_file():
@@ -146,77 +346,165 @@ def verify_full_repo_in_docker(
             "success": False,
             "exit_code": None,
             "stdout": "",
-            "stderr": f"Requirements file not found: {requirements_path}",
+            "stderr": (
+                f"Requirements file not found: {requirements_path}"
+            ),
         }
 
     test_cmd = test_command.strip()
 
+    docker = shutil.which("docker")
+
+    if docker is None:
+        return {
+            "status": "DOCKER_UNAVAILABLE",
+            "success": False,
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "Docker CLI was not found on PATH.",
+        }
+
+    # Check the Docker daemon.
     try:
-        with tempfile.TemporaryDirectory(prefix="aston_verify_") as temp_dir:
+        daemon_check = subprocess.run(
+            [docker, "info"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
 
-            verification_repo = Path(temp_dir) / "repo"
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "DOCKER_UNAVAILABLE",
+            "success": False,
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "Docker daemon check timed out.",
+        }
 
-            # 1. Copy the original repository.
-            shutil.copytree(
-                repo_path,
-                verification_repo,
-                ignore=shutil.ignore_patterns(
-                    ".git",
-                    ".venv",
-                    "venv",
-                    "__pycache__",
-                    ".pytest_cache",
-                ),
+    except OSError as exc:
+        return {
+            "status": "DOCKER_UNAVAILABLE",
+            "success": False,
+            "exit_code": None,
+            "stdout": "",
+            "stderr": str(exc),
+        }
+
+    if daemon_check.returncode != 0:
+        return {
+            "status": "DOCKER_UNAVAILABLE",
+            "success": False,
+            "exit_code": None,
+            "stdout": daemon_check.stdout,
+            "stderr": daemon_check.stderr or "Docker daemon unavailable.",
+        }
+
+    # Pull the base image before running offline-first containers.
+    image_ok, image_error = _ensure_docker_image(
+        docker,
+        python_image,
+        timeout,
+    )
+
+    if not image_ok:
+        return {
+            "status": "IMAGE_ERROR",
+            "success": False,
+            "exit_code": None,
+            "stdout": "",
+            "stderr": image_error,
+        }
+
+    attempts = []
+    stdout = ""
+    stderr = ""
+    returncode = None
+    network_mode = None
+
+    temp_dir = tempfile.mkdtemp(prefix="aston_verify_")
+    verification_repo = Path(temp_dir) / "repo"
+
+    try:
+        # --------------------------------------------------
+        # 1. Copy original repository
+        # --------------------------------------------------
+
+        shutil.copytree(
+            repo_path,
+            verification_repo,
+            ignore=shutil.ignore_patterns(
+                ".git",
+                ".venv",
+                "venv",
+                "__pycache__",
+                ".pytest_cache",
+                ".mypy_cache",
+                ".ruff_cache",
+                ".tox",
+                ".nox",
+                ".idea",
+                ".vscode",
+                "node_modules",
+                ".aston",
+            ),
+        )
+
+        # --------------------------------------------------
+        # 2. Overlay migrated files
+        # --------------------------------------------------
+
+        for migrated_file in migration_path.rglob("*"):
+
+            if not migrated_file.is_file():
+                continue
+
+            relative_path = migrated_file.relative_to(
+                migration_path
             )
 
-            # 2. Overlay migrated files, preserving their relative paths.
-            for migrated_file in migration_path.rglob("*"):
+            if relative_path.as_posix() == "requirements.txt":
+                continue
 
-                if not migrated_file.is_file():
-                    continue
+            destination = verification_repo / relative_path
+            destination.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
 
-                relative_path = migrated_file.relative_to(migration_path)
-
-                # Requirements are handled separately below.
-                if relative_path.as_posix() == "requirements.txt":
-                    continue
-
-                destination = verification_repo / relative_path
-                destination.parent.mkdir(parents=True, exist_ok=True)
-
-                shutil.copy2(migrated_file, destination)
-
-            # 3. Replace requirements with the target requirements.
             shutil.copy2(
-                requirements_path,
-                verification_repo / "requirements.txt",
+                migrated_file,
+                destination,
             )
 
-            # 4. Run the assembled repository inside Docker.
-            script = f"""
-export PIP_CACHE_DIR=/root/.cache/pip
+        # --------------------------------------------------
+        # 3. Replace target requirements
+        # --------------------------------------------------
+
+        shutil.copy2(
+            requirements_path,
+            verification_repo / "requirements.txt",
+        )
+
+        # --------------------------------------------------
+        # 4. Construct verification script
+        # --------------------------------------------------
+
+        script = r'''
 set -eu
 
-echo "--- [Verification] Installing requirements ---"
-python -m pip install --disable-pip-version-check -r /app/requirements.txt ||
-    {{ echo "ASTON_SETUP_FAILED"; exit 20; }}
-"""
+export PIP_CACHE_DIR=/root/.cache/pip
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONUNBUFFERED=1
 
-            if test_cmd:
-                if "pytest" in test_cmd.lower():
-                    script += """
-echo "--- [Verification] Checking test runner ---"
-if ! python -c "import pytest" 2>/dev/null; then
-    python -m pip install --disable-pip-version-check pytest ||
-        { echo "ASTON_PYTEST_SETUP_FAILED"; exit 23; }
-fi
-"""
 
-            script += """
 echo "--- [Verification] Running AST syntax checks ---"
-python -c '
+
+if ! python - <<'PY'
 import ast
 import sys
+import tokenize
 from pathlib import Path
 
 root = Path("/app")
@@ -227,30 +515,48 @@ excluded = {
     "venv",
     "__pycache__",
     ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".nox",
+    "node_modules",
+    ".aston",
 }
 
 errors = []
 
 for path in root.rglob("*.py"):
-    if any(part in excluded for part in path.parts):
+    if any(part in excluded for part in path.relative_to(root).parts):
         continue
 
     try:
-        ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        with tokenize.open(str(path)) as source_file:
+            source = source_file.read()
+
+        ast.parse(source, filename=str(path))
+
     except (SyntaxError, UnicodeDecodeError, OSError) as exc:
         errors.append((path, exc))
 
 for path, exc in errors:
-    print("Syntax error in {}: {}".format(path, exc), file=sys.stderr)
+    print(
+        "Syntax error in {}: {}".format(path, exc),
+        file=sys.stderr,
+    )
 
 sys.exit(1 if errors else 0)
-' || { echo "ASTON_SYNTAX_FAILED"; exit 21; }
-"""
+PY
+then
+    echo "ASTON_SYNTAX_FAILED"
+    exit 21
+fi
+'''
 
-            if test_cmd:
-                if "pytest" in test_cmd.lower():
-                    script += f"""
+        if test_cmd:
+            if "pytest" in test_cmd.lower():
+                script += f'''
 echo "--- [Verification] Running test suite ---"
+
 set +e
 export PYTEST_ADDOPTS="${{PYTEST_ADDOPTS:-}} -p no:cacheprovider"
 {test_cmd}
@@ -258,141 +564,218 @@ test_status=$?
 set -e
 
 if [ "$test_status" -eq 5 ]; then
-    echo "ASTON_TESTS_SKIPPED_NO_TESTS: pytest collected no tests."
+    echo "ASTON_TESTS_NO_TESTS"
+    exit 24
 elif [ "$test_status" -ne 0 ]; then
     echo "ASTON_TESTS_FAILED: exit code $test_status"
     exit 22
 else
     echo "ASTON_TESTS_PASSED"
 fi
-"""
-                else:
-                    script += f"""
+'''
+            else:
+                script += f'''
 echo "--- [Verification] Running test suite ---"
+
 {test_cmd} ||
-    {{ echo "ASTON_TESTS_FAILED"; exit 22; }}
-"""
+    {{
+        echo "ASTON_TESTS_FAILED"
+        exit 22
+    }}
+'''
 
-            script += """
+        script += r'''
 echo "ASTON_VERIFICATION_PASSED"
-"""
+'''
 
-            network_modes = ["none", "bridge"]
-            attempts = []
-            returncode = 1
-            stdout = ""
-            stderr = ""
-            network_mode = None
+        # --------------------------------------------------
+        # 5. Run offline first, then bridge if necessary
+        # --------------------------------------------------
 
-            for mode in network_modes:
+        for mode in ("none", "bridge"):
 
-                docker_cmd = [
-                    "docker", "run", "--rm",
-                    "--network", mode,
-                    "-v", f"{verification_repo}:/app:ro,Z",
-                    "-v", "aston-pip-cache:/root/.cache/pip",
-                    "--workdir", "/app",
-                    python_image,
-                    "sh", "-c", script,
-                ]
+            network_mode = mode
 
+            container_id_file = (
+                Path(temp_dir)
+                / f"aston-container-{uuid.uuid4().hex}.cid"
+            )
+
+            docker_cmd = [
+                docker,
+                "run",
+                "--rm",
+                "--cidfile",
+                str(container_id_file),
+                "--network",
+                mode,
+                "-v",
+                f"{verification_repo}:/app:rw,Z",
+                "-v",
+                "aston-pip-cache:/root/.cache/pip",
+                "--workdir",
+                "/app",
+                python_image,
+                "sh",
+                "-c",
+                script,
+            ]
+
+            try:
                 returncode, stdout, stderr = _run_docker_with_progress(
                     docker_cmd=docker_cmd,
                     timeout=timeout,
-                    description=f"Verifying repository in Docker ({mode})",
+                    description=(
+                        f"Verifying repository in Docker ({mode})"
+                    ),
                 )
 
-                output = stdout + "\n" + stderr
+            except subprocess.TimeoutExpired as exc:
+                timeout_stdout = exc.stdout or ""
+                timeout_stderr = exc.stderr or ""
+
+                if isinstance(timeout_stdout, bytes):
+                    timeout_stdout = timeout_stdout.decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+
+                if isinstance(timeout_stderr, bytes):
+                    timeout_stderr = timeout_stderr.decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+
+                _remove_container(
+                    docker,
+                    container_id_file,
+                )
 
                 attempts.append({
                     "network_mode": mode,
-                    "exit_code": returncode,
-                    "stdout": stdout,
-                    "stderr": stderr,
+                    "exit_code": None,
+                    "timed_out": True,
+                    "stdout": timeout_stdout,
+                    "stderr": timeout_stderr,
                 })
 
-                network_mode = mode
+                _print_failure_summary(
+                    "TIMEOUT",
+                    None,
+                    timeout_stdout,
+                    timeout_stderr,
+                )
 
-                # Successful verification: stop immediately.
-                if (
-                    returncode == 0
-                    and "ASTON_VERIFICATION_PASSED" in output
-                ):
-                    break
+                return {
+                    "status": "TIMEOUT",
+                    "success": False,
+                    "exit_code": None,
+                    "stdout": timeout_stdout,
+                    "stderr": timeout_stderr,
+                    "network_mode": mode,
+                    "attempts": attempts,
+                }
 
-                # Only retry when offline execution clearly failed
-                # because of network connectivity.
-                if mode == "none" and _is_network_failure(output):
-                    continue
-
-                # Do not retry migration, syntax, test, or other failures.
-                break
+            finally:
+                _remove_container(
+                    docker,
+                    container_id_file,
+                )
 
             output = stdout + "\n" + stderr
 
+            attempts.append({
+                "network_mode": mode,
+                "exit_code": returncode,
+                "timed_out": False,
+                "stdout": stdout,
+                "stderr": stderr,
+            })
+
+            # Stop immediately on success.
             if (
                 returncode == 0
                 and "ASTON_VERIFICATION_PASSED" in output
             ):
-                status = "PASS"
+                break
 
-            elif "ASTON_SETUP_FAILED" in output:
-                status = "SETUP_ERROR"
+            # Only retry offline failures that look network-related.
+            if mode == "none" and _is_network_failure(output):
+                continue
 
-            elif "ASTON_PYTEST_SETUP_FAILED" in output:
-                status = "SETUP_ERROR"
+            # Don't retry syntax, migration, or test failures.
+            break
 
-            elif "ASTON_SYNTAX_FAILED" in output:
-                status = "SYNTAX_ERROR"
+        # --------------------------------------------------
+        # 6. Classify final result
+        # --------------------------------------------------
 
-            elif "ASTON_TESTS_FAILED" in output:
-                status = "TEST_FAILED"
+        output = stdout + "\n" + stderr
 
-            elif _is_network_failure(output):
-                status = "NETWORK_ERROR"
+        status = _classify_verification_output(
+            output,
+            returncode,
+        )
 
-            else:
-                status = "DOCKER_ERROR"
+        if status != "PASS":
+            _print_failure_summary(
+                status,
+                returncode,
+                stdout,
+                stderr,
+            )
 
-            if status != "PASS":
-                _print_failure_summary(status, returncode, stdout, stderr)
-
-            return {
-                "status": status,
-                "success": status == "PASS",
-                "exit_code": returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-                "network_mode": network_mode,
-                "attempts": attempts,
-            }
-
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or "Repository verification timed out."
-
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", errors="replace")
-
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode("utf-8", errors="replace")
-
-        _print_failure_summary("TIMEOUT", None, stdout, stderr)
-
-        return {
-            "status": "TIMEOUT",
-            "success": False,
-            "exit_code": None,
+        result = {
+            "status": status,
+            "success": status == "PASS",
+            "exit_code": returncode,
             "stdout": stdout,
             "stderr": stderr,
+            "network_mode": network_mode,
+            "attempts": attempts,
         }
 
+        return result
+
     except OSError as exc:
-        _print_failure_summary("DOCKER_ERROR", None, "", str(exc))
+        _print_failure_summary(
+            "DOCKER_ERROR",
+            None,
+            "",
+            str(exc),
+        )
+
         return {
             "status": "DOCKER_ERROR",
             "success": False,
             "exit_code": None,
             "stdout": "",
             "stderr": str(exc),
+            "attempts": attempts,
         }
+
+    except Exception as exc:
+        _print_failure_summary(
+            "VERIFICATION_ERROR",
+            None,
+            "",
+            str(exc),
+        )
+
+        return {
+            "status": "VERIFICATION_ERROR",
+            "success": False,
+            "exit_code": None,
+            "stdout": stdout,
+            "stderr": str(exc),
+            "attempts": attempts,
+        }
+
+    finally:
+        if preserve_context:
+            print(
+                f"\n[ASTON DEBUG] Verification repository retained: "
+                f"{verification_repo}"
+            )
+        else:
+            shutil.rmtree(temp_dir, ignore_errors=True)
