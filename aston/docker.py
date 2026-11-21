@@ -687,6 +687,23 @@ def verify_single_file_in_docker(
 
         copied_target = repo_copy / target_rel
 
+        # Candidate files live under .aston/runs/<run_id>/..., which _ignore_repo_files
+        # excludes during the full-repo copy. Explicitly copy target_abs into repo_copy.
+        if not copied_target.is_file() and target_abs.is_file():
+            try:
+                copied_target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(target_abs, copied_target)
+            except OSError as exc:
+                return VerificationOutput(
+                    status=VerificationResult.ENVIRONMENT_ERROR,
+                    target_file=str(target_abs),
+                    error_type="TargetCopyError",
+                    error_message=(
+                        f"Failed copying target file {target_abs} into Docker context: {exc}"
+                    ),
+                    duration_seconds=time.monotonic() - started,
+                )
+
         if not copied_target.is_file():
             return VerificationOutput(
                 status=VerificationResult.ENVIRONMENT_ERROR,
@@ -835,7 +852,7 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
             bridge_command = [
                 docker,
                 "build",
-                "--network=bridge",
+                "--network=default",
                 "--progress=plain",
                 "--tag",
                 image_tag,

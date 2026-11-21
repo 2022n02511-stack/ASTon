@@ -368,7 +368,7 @@ def main():
                 args.json,
             )
             report_data, report_path = load_migration_report(
-                repo_path=repo_path,
+                repo_root=repo_path,
                 run_id=args.run_id,
             )
             render_migration_report(

@@ -1,10 +1,11 @@
 # aston/notifications.py
+
+from __future__ import annotations
+
 import json
 from datetime import datetime
 from pathlib import Path
 from aston.cli.console import rich_success, warning, info, error
-
-from __future__ import annotations
 
 import logging
 from aston.config import LOGS_DIR, get_config_dir

@@ -1,11 +1,15 @@
+from __future__ import annotations
+
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.progress import (
@@ -22,9 +26,9 @@ logger = logging.getLogger(__name__)
 
 
 def _is_network_failure(output: str) -> bool:
-    """Detect recognisable DNS/resolution or network-unreachable failures."""
+    """Detect recognisable DNS/resolution or network-connectivity failures."""
 
-    output = output.lower()
+    lower = output.lower()
 
     network_markers = (
         "temporary failure in name resolution",
@@ -40,13 +44,53 @@ def _is_network_failure(output: str) -> bool:
         "no route to host",
         "network is down",
         "connection refused",
+        "connection aborted",
+        "remotedisconnected",
+        "remote end closed connection",
+        "protocolerror",
+        "read timed out",
+        "readtimeouterror",
         "failed to establish a new connection",
         "socket.gaierror",
         "newconnectionerror",
         "dns lookup",
     )
 
-    return any(marker in output for marker in network_markers)
+    return any(marker in lower for marker in network_markers)
+
+
+def _decode_output(value: str | bytes | None) -> str:
+    """Safely decode subprocess output that may be str, bytes, or None."""
+
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _write_debug_artifact(
+    repo_root: Path,
+    mode: str,
+    stdout: str,
+    stderr: str,
+) -> Path | None:
+    """Persist full-repo verification logs under .aston/debug."""
+
+    try:
+        debug_dir = repo_root / ".aston" / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        safe_mode = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in mode)
+        artifact_path = debug_dir / f"full_repo_verify_{safe_mode}_{timestamp}.log"
+        artifact_path.write_text(
+            f"=== STDERR ===\n{stderr}\n\n=== STDOUT ===\n{stdout}",
+            encoding="utf-8",
+        )
+        return artifact_path
+    except OSError as exc:
+        logger.debug("Could not write full-repo debug log: %s", exc)
+        return None
 
 
 def _run_docker_with_progress(
@@ -65,10 +109,10 @@ def _run_docker_with_progress(
         start_new_session=(os.name == "posix"),
     )
 
-    stdout_chunks = []
-    stderr_chunks = []
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
 
-    def _read_stream(pipe, sink):
+    def _read_stream(pipe, sink: list[str]) -> None:
         if pipe is None:
             return
 
@@ -123,8 +167,6 @@ def _run_docker_with_progress(
 
                 try:
                     if os.name == "posix":
-                        import signal
-
                         os.killpg(process.pid, signal.SIGTERM)
                     else:
                         process.terminate()
@@ -134,8 +176,6 @@ def _run_docker_with_progress(
                 except (subprocess.TimeoutExpired, ProcessLookupError):
                     try:
                         if os.name == "posix":
-                            import signal
-
                             os.killpg(process.pid, signal.SIGKILL)
                         else:
                             process.kill()
@@ -260,12 +300,15 @@ def _print_failure_summary(
     returncode: int | None,
     stdout: str,
     stderr: str,
+    debug_log: Path | None = None,
 ) -> None:
     """Log and report a concise failure summary."""
 
     summary = (
         f"Full-repo verification failed (status={status}, exit_code={returncode})."
     )
+    if debug_log is not None:
+        summary = f"{summary} Details saved to {debug_log}."
     error(summary)
     logger.error(summary)
 
@@ -321,14 +364,14 @@ def verify_full_repo_in_docker(
     Verify the assembled migrated repository inside Docker.
 
     Workflow:
-    1. Validate input paths.
-    2. Ensure Docker and the base image are available.
-    3. Copy the original repository into a temporary directory.
-    4. Overlay migrated files.
-    5. Install target requirements.
-    6. Run AST syntax checks.
-    7. Run the configured test command.
-    8. Retry with bridge networking only when network_mode="auto" and
+1. Validate input paths.
+2. Ensure Docker and the base image are available.
+3. Copy the original repository into a temporary directory.
+4. Overlay migrated files.
+5. Install target requirements.
+6. Run AST syntax checks.
+7. Run the configured test command.
+8. Retry with bridge networking only when network_mode="auto" and
        offline execution hits a recognisable network failure.
 
     PASS means the configured verification steps passed.
@@ -465,11 +508,11 @@ def verify_full_repo_in_docker(
             "duration_seconds": time.monotonic() - started,
         }
 
-    attempts = []
+    attempts: list[dict] = []
     stdout = ""
     stderr = ""
-    returncode = None
-    active_network = None
+    returncode: int | None = None
+    active_network: str | None = None
 
     temp_dir = tempfile.mkdtemp(prefix="aston_verify_")
     verification_repo = Path(temp_dir) / "repo"
@@ -543,7 +586,12 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONUNBUFFERED=1
 
 echo "--- [Verification] Installing requirements ---"
-python -m pip install --disable-pip-version-check -r /app/requirements.txt ||
+python -m pip install \
+    --disable-pip-version-check \
+    --default-timeout=120 \
+    --retries=8 \
+    --progress-bar=off \
+    -r /app/requirements.txt ||
     { echo "ASTON_SETUP_FAILED"; exit 20; }
 '''
 
@@ -551,7 +599,12 @@ python -m pip install --disable-pip-version-check -r /app/requirements.txt ||
             script += r'''
 echo "--- [Verification] Checking test runner ---"
 if ! python -c "import pytest" 2>/dev/null; then
-    python -m pip install --disable-pip-version-check pytest ||
+    python -m pip install \
+        --disable-pip-version-check \
+        --default-timeout=120 \
+        --retries=8 \
+        --progress-bar=off \
+        pytest ||
         { echo "ASTON_PYTEST_SETUP_FAILED"; exit 23; }
 fi
 '''
@@ -674,7 +727,7 @@ echo "ASTON_VERIFICATION_PASSED"
                 "-v",
                 f"{verification_repo}:/app:rw,Z",
                 "-v",
-                "aston-pip-cache:/root/.cache/pip",
+                "aston-pip-cache:/root/.cache/pip:Z",
                 "--workdir",
                 "/app",
                 python_image,
@@ -693,24 +746,19 @@ echo "ASTON_VERIFICATION_PASSED"
                 )
 
             except subprocess.TimeoutExpired as exc:
-                timeout_stdout = exc.stdout or ""
-                timeout_stderr = exc.stderr or ""
-
-                if isinstance(timeout_stdout, bytes):
-                    timeout_stdout = timeout_stdout.decode(
-                        "utf-8",
-                        errors="replace",
-                    )
-
-                if isinstance(timeout_stderr, bytes):
-                    timeout_stderr = timeout_stderr.decode(
-                        "utf-8",
-                        errors="replace",
-                    )
+                timeout_stdout = _decode_output(exc.stdout)
+                timeout_stderr = _decode_output(exc.stderr)
 
                 _remove_container(
                     docker,
                     container_id_file,
+                )
+
+                debug_log = _write_debug_artifact(
+                    repo_path,
+                    mode,
+                    timeout_stdout,
+                    timeout_stderr,
                 )
 
                 attempts.append({
@@ -726,6 +774,7 @@ echo "ASTON_VERIFICATION_PASSED"
                     None,
                     timeout_stdout,
                     timeout_stderr,
+                    debug_log=debug_log,
                 )
 
                 return {
@@ -783,12 +832,32 @@ echo "ASTON_VERIFICATION_PASSED"
             returncode,
         )
 
-        if status != "PASS":
+        if status == "NO_TESTS":
+            debug_log = _write_debug_artifact(
+                repo_path,
+                active_network or requested_network,
+                stdout,
+                stderr,
+            )
+            logger.warning(
+                "Full-repo verification incomplete: no tests were discovered. "
+                "Syntax checks completed. Details: %s",
+                debug_log or "No debug log available",
+            )
+
+        elif status != "PASS":
+            debug_log = _write_debug_artifact(
+                repo_path,
+                active_network or requested_network,
+                stdout,
+                stderr,
+            )
             _print_failure_summary(
                 status,
                 returncode,
                 stdout,
                 stderr,
+                debug_log=debug_log,
             )
         else:
             logger.info(
@@ -799,6 +868,7 @@ echo "ASTON_VERIFICATION_PASSED"
 
         return {
             "status": status,
+            "verification_incomplete": status == "NO_TESTS",
             "success": status == "PASS",
             "exit_code": returncode,
             "stdout": stdout,
@@ -809,18 +879,25 @@ echo "ASTON_VERIFICATION_PASSED"
         }
 
     except OSError as exc:
+        debug_log = _write_debug_artifact(
+            repo_path,
+            active_network or requested_network,
+            stdout,
+            str(exc),
+        )
         _print_failure_summary(
             "DOCKER_ERROR",
             None,
-            "",
+            stdout,
             str(exc),
+            debug_log=debug_log,
         )
 
         return {
             "status": "DOCKER_ERROR",
             "success": False,
             "exit_code": None,
-            "stdout": "",
+            "stdout": stdout,
             "stderr": str(exc),
             "network_mode": active_network,
             "attempts": attempts,
@@ -828,11 +905,18 @@ echo "ASTON_VERIFICATION_PASSED"
         }
 
     except Exception as exc:
+        debug_log = _write_debug_artifact(
+            repo_path,
+            active_network or requested_network,
+            stdout,
+            str(exc),
+        )
         _print_failure_summary(
             "VERIFICATION_ERROR",
             None,
-            "",
+            stdout,
             str(exc),
+            debug_log=debug_log,
         )
 
         return {
