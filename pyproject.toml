@@ -29,3 +29,6 @@ aston = "aston.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["aston*"]
+
+[tool.setuptools.package-data]
+aston = ["*.txt", "*.md", "*.json", "*.yaml", "*.yml"]
