@@ -21,6 +21,16 @@ DEFAULT_CONFIG = {
         "docker_file_timeout_seconds": 300, # Timeout for single-file sandbox checks
         "docker_repo_timeout_seconds": 300,# Timeout for repo-wide test suites
     },
+    "verification": {
+        "enabled": True,
+        "python_image": "python:3.11-slim",
+        "network_mode": "auto",             # "auto" | "none" | "bridge"
+        "requirements_file": "requirements.txt",
+        "test_command": "python -m pytest -q",
+        "file_timeout": 300,
+        "repo_timeout": 300,
+        "build_timeout": 600,
+    },
     "github": {
         "default_base_branch": "main",
         "draft_prs": False,
@@ -44,31 +54,52 @@ def get_config_dir() -> Path:
     return CONFIG_DIR
 
 
-def load_config() -> dict:
+def _merge_yaml_file(config: dict, path: Path) -> None:
+    if not path.is_file():
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            user_config = yaml.safe_load(f)
+            if isinstance(user_config, dict):
+                for section, values in user_config.items():
+                    if (
+                        section in config
+                        and isinstance(values, dict)
+                        and isinstance(config[section], dict)
+                    ):
+                        config[section].update(values)
+                    else:
+                        config[section] = values
+    except Exception as exc:
+        warning(f"Failed to parse {path}: {exc}. Continuing with current configuration.")
+
+
+def load_config(repo_root: str | Path | None = None) -> dict:
     """
-    Load configuration from ~/.config/aston/config.yaml,
-    falling back to defaults, applying environment variable overrides,
-    and overlaying runtime CLI overrides.
+    Load configuration from ~/.config/aston/config.yaml and optional repo
+    .aston/config.yaml, falling back to defaults, applying environment variable
+    overrides, and overlaying runtime CLI overrides.
     """
-    # Create a deep-ish copy of defaults to prevent mutating the global dictionary
     config = {
         section: values.copy() if isinstance(values, dict) else values
         for section, values in DEFAULT_CONFIG.items()
     }
 
-    if CONFIG_FILE.is_file():
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                user_config = yaml.safe_load(f)
-                if isinstance(user_config, dict):
-                    # Deep merge user config into defaults
-                    for section, values in user_config.items():
-                        if section in config and isinstance(values, dict) and isinstance(config[section], dict):
-                            config[section].update(values)
-                        else:
-                            config[section] = values
-        except Exception as exc:
-            warning(f"Failed to parse {CONFIG_FILE}: {exc}. Using default configuration.")
+    _merge_yaml_file(config, CONFIG_FILE)
+
+    repo_dir = Path(repo_root).expanduser().resolve() if repo_root is not None else Path.cwd().resolve()
+    repo_config = repo_dir / ".aston" / "config.yaml"
+    if repo_config != CONFIG_FILE:
+        _merge_yaml_file(config, repo_config)
+
+    # Preserve legacy migration timeout keys if verification timeouts were not explicitly set.
+    migration_cfg = config.get("migration", {})
+    verification_cfg = config.get("verification", {})
+    if isinstance(migration_cfg, dict) and isinstance(verification_cfg, dict):
+        if "file_timeout" not in verification_cfg and "docker_file_timeout_seconds" in migration_cfg:
+            verification_cfg["file_timeout"] = migration_cfg["docker_file_timeout_seconds"]
+        if "repo_timeout" not in verification_cfg and "docker_repo_timeout_seconds" in migration_cfg:
+            verification_cfg["repo_timeout"] = migration_cfg["docker_repo_timeout_seconds"]
 
     # Environment variable overrides
     if os.getenv("ASTON_MODEL"):
@@ -77,7 +108,11 @@ def load_config() -> dict:
     # Apply runtime CLI overrides on top
     if _RUNTIME_OVERRIDES:
         for section, values in _RUNTIME_OVERRIDES.items():
-            if section in config and isinstance(values, dict) and isinstance(config[section], dict):
+            if (
+                section in config
+                and isinstance(values, dict)
+                and isinstance(config[section], dict)
+            ):
                 config[section].update(values)
             else:
                 config[section] = values

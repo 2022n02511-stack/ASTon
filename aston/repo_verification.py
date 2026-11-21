@@ -1,11 +1,9 @@
-
 import os
 import shutil
 import subprocess
 import tempfile
 import threading
 import time
-import tokenize
 import uuid
 
 from pathlib import Path
@@ -19,7 +17,7 @@ from rich.progress import (
 
 
 def _is_network_failure(output: str) -> bool:
-    """Detect recognisable network-connectivity failures."""
+    """Detect recognisable DNS/resolution or network-unreachable failures."""
 
     output = output.lower()
 
@@ -29,16 +27,17 @@ def _is_network_failure(output: str) -> bool:
         "could not resolve",
         "name or service not known",
         "name resolution failed",
+        "name resolution error",
         "no address associated with hostname",
+        "nodename nor servname provided",
         "getaddrinfo failed",
         "network is unreachable",
         "no route to host",
         "network is down",
+        "connection refused",
         "failed to establish a new connection",
-        "connection timed out",
-        "connect timeout",
-        "connecttimeout",
         "socket.gaierror",
+        "newconnectionerror",
         "dns lookup",
     )
 
@@ -260,7 +259,7 @@ def _print_failure_summary(
 
 def _classify_verification_output(
     output: str,
-    returncode: int,
+    returncode: int | None,
 ) -> str:
     """Map verification output to a structured status."""
 
@@ -296,6 +295,7 @@ def verify_full_repo_in_docker(
     python_image: str = "python:3.11-slim",
     timeout: int = 300,
     test_command: str = "python -m pytest -q",
+    network_mode: str = "auto",
     preserve_context: bool = False,
 ) -> dict:
     """
@@ -309,12 +309,17 @@ def verify_full_repo_in_docker(
         5. Install target requirements.
         6. Run AST syntax checks.
         7. Run the configured test command.
-        8. Retry with bridge networking only after a
-           recognisable offline network failure.
+        8. Retry with bridge networking only when network_mode="auto" and
+           offline execution hits a recognisable network failure.
 
     PASS means the configured verification steps passed.
     It does not prove behavioural equivalence.
     """
+
+    started = time.monotonic()
+    requested_network = (
+        network_mode if network_mode in {"auto", "none", "bridge"} else "auto"
+    )
 
     repo_path = Path(repo_root).expanduser().resolve()
     migration_path = Path(migrated_files_path).expanduser().resolve()
@@ -327,6 +332,9 @@ def verify_full_repo_in_docker(
             "exit_code": None,
             "stdout": "",
             "stderr": f"Repository directory not found: {repo_path}",
+            "network_mode": None,
+            "attempts": [],
+            "duration_seconds": time.monotonic() - started,
         }
 
     if not migration_path.is_dir():
@@ -338,6 +346,9 @@ def verify_full_repo_in_docker(
             "stderr": (
                 f"Migrated files directory not found: {migration_path}"
             ),
+            "network_mode": None,
+            "attempts": [],
+            "duration_seconds": time.monotonic() - started,
         }
 
     if not requirements_path.is_file():
@@ -349,6 +360,9 @@ def verify_full_repo_in_docker(
             "stderr": (
                 f"Requirements file not found: {requirements_path}"
             ),
+            "network_mode": None,
+            "attempts": [],
+            "duration_seconds": time.monotonic() - started,
         }
 
     test_cmd = test_command.strip()
@@ -362,6 +376,9 @@ def verify_full_repo_in_docker(
             "exit_code": None,
             "stdout": "",
             "stderr": "Docker CLI was not found on PATH.",
+            "network_mode": None,
+            "attempts": [],
+            "duration_seconds": time.monotonic() - started,
         }
 
     # Check the Docker daemon.
@@ -381,6 +398,9 @@ def verify_full_repo_in_docker(
             "exit_code": None,
             "stdout": "",
             "stderr": "Docker daemon check timed out.",
+            "network_mode": None,
+            "attempts": [],
+            "duration_seconds": time.monotonic() - started,
         }
 
     except OSError as exc:
@@ -390,6 +410,9 @@ def verify_full_repo_in_docker(
             "exit_code": None,
             "stdout": "",
             "stderr": str(exc),
+            "network_mode": None,
+            "attempts": [],
+            "duration_seconds": time.monotonic() - started,
         }
 
     if daemon_check.returncode != 0:
@@ -399,6 +422,9 @@ def verify_full_repo_in_docker(
             "exit_code": None,
             "stdout": daemon_check.stdout,
             "stderr": daemon_check.stderr or "Docker daemon unavailable.",
+            "network_mode": None,
+            "attempts": [],
+            "duration_seconds": time.monotonic() - started,
         }
 
     # Pull the base image before running offline-first containers.
@@ -415,13 +441,16 @@ def verify_full_repo_in_docker(
             "exit_code": None,
             "stdout": "",
             "stderr": image_error,
+            "network_mode": None,
+            "attempts": [],
+            "duration_seconds": time.monotonic() - started,
         }
 
     attempts = []
     stdout = ""
     stderr = ""
     returncode = None
-    network_mode = None
+    active_network = None
 
     temp_dir = tempfile.mkdtemp(prefix="aston_verify_")
     verification_repo = Path(temp_dir) / "repo"
@@ -498,7 +527,21 @@ export PIP_CACHE_DIR=/root/.cache/pip
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONUNBUFFERED=1
 
+echo "--- [Verification] Installing requirements ---"
+python -m pip install --disable-pip-version-check -r /app/requirements.txt ||
+    { echo "ASTON_SETUP_FAILED"; exit 20; }
+'''
 
+        if test_cmd and "pytest" in test_cmd.lower():
+            script += r'''
+echo "--- [Verification] Checking test runner ---"
+if ! python -c "import pytest" 2>/dev/null; then
+    python -m pip install --disable-pip-version-check pytest ||
+        { echo "ASTON_PYTEST_SETUP_FAILED"; exit 23; }
+fi
+'''
+
+        script += r'''
 echo "--- [Verification] Running AST syntax checks ---"
 
 if ! python - <<'PY'
@@ -589,12 +632,19 @@ echo "ASTON_VERIFICATION_PASSED"
 '''
 
         # --------------------------------------------------
-        # 5. Run offline first, then bridge if necessary
+        # 5. Execute according to configured network_mode
         # --------------------------------------------------
 
-        for mode in ("none", "bridge"):
+        if requested_network == "none":
+            modes_to_try = ("none",)
+        elif requested_network == "bridge":
+            modes_to_try = ("bridge",)
+        else:
+            modes_to_try = ("none", "bridge")
 
-            network_mode = mode
+        for mode in modes_to_try:
+
+            active_network = mode
 
             container_id_file = (
                 Path(temp_dir)
@@ -674,6 +724,7 @@ echo "ASTON_VERIFICATION_PASSED"
                     "stderr": timeout_stderr,
                     "network_mode": mode,
                     "attempts": attempts,
+                    "duration_seconds": time.monotonic() - started,
                 }
 
             finally:
@@ -699,8 +750,12 @@ echo "ASTON_VERIFICATION_PASSED"
             ):
                 break
 
-            # Only retry offline failures that look network-related.
-            if mode == "none" and _is_network_failure(output):
+            # Only retry offline failures that look network-related when mode="auto".
+            if (
+                requested_network == "auto"
+                and mode == "none"
+                and _is_network_failure(output)
+            ):
                 continue
 
             # Don't retry syntax, migration, or test failures.
@@ -725,17 +780,16 @@ echo "ASTON_VERIFICATION_PASSED"
                 stderr,
             )
 
-        result = {
+        return {
             "status": status,
             "success": status == "PASS",
             "exit_code": returncode,
             "stdout": stdout,
             "stderr": stderr,
-            "network_mode": network_mode,
+            "network_mode": active_network,
             "attempts": attempts,
+            "duration_seconds": time.monotonic() - started,
         }
-
-        return result
 
     except OSError as exc:
         _print_failure_summary(
@@ -751,7 +805,9 @@ echo "ASTON_VERIFICATION_PASSED"
             "exit_code": None,
             "stdout": "",
             "stderr": str(exc),
+            "network_mode": active_network,
             "attempts": attempts,
+            "duration_seconds": time.monotonic() - started,
         }
 
     except Exception as exc:
@@ -768,7 +824,9 @@ echo "ASTON_VERIFICATION_PASSED"
             "exit_code": None,
             "stdout": stdout,
             "stderr": str(exc),
+            "network_mode": active_network,
             "attempts": attempts,
+            "duration_seconds": time.monotonic() - started,
         }
 
     finally:

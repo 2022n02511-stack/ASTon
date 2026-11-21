@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import ast
@@ -239,6 +238,7 @@ def _ignore_repo_files(
         ".idea",
         ".vscode",
         "node_modules",
+        ".aston",
     }
 
     return {
@@ -254,19 +254,20 @@ def _is_network_connectivity_failure(output: str) -> bool:
 
     markers = (
         "temporary failure in name resolution",
+        "could not resolve host",
         "name or service not known",
+        "name resolution failed",
+        "name resolution error",
         "getaddrinfo failed",
         "nodename nor servname provided",
         "no address associated with hostname",
         "network is unreachable",
+        "network is down",
         "no route to host",
-        "could not resolve",
-        "couldn't resolve",
-        "dns lookup",
-        "socket.gaierror",
+        "connection refused",
         "failed to establish a new connection",
-        "connecttimeout",
-        "connection timed out",
+        "socket.gaierror",
+        "newconnectionerror",
     )
 
     return any(marker in lower for marker in markers)
@@ -448,6 +449,7 @@ def verify_single_file_in_docker(
     timeout: int = 300,
     build_timeout: int = 600,
     python_image: str = "python:3.11-slim",
+    network_mode: str = "auto",
     preserve_context: bool = False,
 ) -> VerificationOutput:
     """
@@ -462,14 +464,19 @@ def verify_single_file_in_docker(
         Retry with bridge only on recognizable network failures.
 
     Runtime:
-        Try offline execution first.
-        Retry with bridge only on recognizable network failures.
+        network_mode="auto": try offline first; retry with bridge only on
+            recognizable network failures.
+        network_mode="none": execute offline only (no bridge retry).
+        network_mode="bridge": execute with bridge networking directly.
 
     PASS means the target file executed successfully.
     It does not prove full-repository correctness.
     """
 
     started = time.monotonic()
+    requested_network = (
+        network_mode if network_mode in {"auto", "none", "bridge"} else "auto"
+    )
 
     target_input = Path(target_file).expanduser()
     requirements_input = Path(req_file).expanduser()
@@ -501,6 +508,7 @@ def verify_single_file_in_docker(
                 f"Target file {target_abs} is outside repository root "
                 f"{root}. Pass the correct repo_root."
             ),
+            duration_seconds=time.monotonic() - started,
         )
 
     if not root.is_dir():
@@ -509,6 +517,7 @@ def verify_single_file_in_docker(
             target_file=str(target_abs),
             error_type="RepositoryNotFound",
             error_message=f"Repository root does not exist: {root}",
+            duration_seconds=time.monotonic() - started,
         )
 
     if not target_abs.is_file():
@@ -517,6 +526,7 @@ def verify_single_file_in_docker(
             target_file=str(target_abs),
             error_type="TargetFileNotFound",
             error_message=f"Target file does not exist: {target_abs}",
+            duration_seconds=time.monotonic() - started,
         )
 
     syntax_result = _validate_python_syntax(target_abs)
@@ -540,6 +550,7 @@ def verify_single_file_in_docker(
             error_message=(
                 f"Requirements file does not exist: {requirements_input}"
             ),
+            duration_seconds=time.monotonic() - started,
         )
 
     docker = shutil.which("docker")
@@ -550,6 +561,7 @@ def verify_single_file_in_docker(
             target_file=str(target_abs),
             error_type="DockerNotFound",
             error_message="Docker CLI was not found on PATH.",
+            duration_seconds=time.monotonic() - started,
         )
 
     try:
@@ -569,6 +581,7 @@ def verify_single_file_in_docker(
             error_message=(
                 "Timed out checking whether the Docker daemon is available."
             ),
+            duration_seconds=time.monotonic() - started,
         )
 
     except OSError as exc:
@@ -577,6 +590,7 @@ def verify_single_file_in_docker(
             target_file=str(target_abs),
             error_type="DockerUnavailable",
             error_message=str(exc),
+            duration_seconds=time.monotonic() - started,
         )
 
     if daemon_check.returncode != 0:
@@ -591,9 +605,9 @@ def verify_single_file_in_docker(
             ),
             raw_stderr=daemon_check.stderr,
             raw_stdout=daemon_check.stdout,
+            duration_seconds=time.monotonic() - started,
         )
 
-    # Make sure the base image is available before attempting an offline build.
     image_ok, image_error = _ensure_base_image(
         docker,
         python_image,
@@ -622,7 +636,8 @@ def verify_single_file_in_docker(
     build_stderr = ""
     build_network = "none"
 
-    print(f"\n[ASTON DEBUG] Docker context: {context}")
+    if preserve_context:
+        print(f"\n[ASTON DEBUG] Docker context: {context}")
 
     try:
         repo_copy = context / "repo"
@@ -892,13 +907,17 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
         image_created = True
 
         # --------------------------------------------------
-        # RUNTIME: OFFLINE FIRST
+        # RUNTIME EXECUTION
         # --------------------------------------------------
+
+        initial_runtime_mode = (
+            "bridge" if requested_network == "bridge" else "none"
+        )
 
         run, run_timeout = _run_container(
             docker,
             image_tag,
-            "none",
+            initial_runtime_mode,
             timeout,
         )
 
@@ -909,14 +928,14 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
                 error_type="ExecutionTimeout",
                 error_message=(
                     f"Target execution exceeded {timeout} "
-                    "seconds in offline mode."
+                    f"seconds in {initial_runtime_mode} mode."
                 ),
                 raw_stdout=run_timeout.stdout or "",
                 raw_stderr=run_timeout.stderr or "",
-                network_mode="none",
+                network_mode=initial_runtime_mode,
                 attempts=attempts + [{
                     "stage": "runtime",
-                    "network_mode": "none",
+                    "network_mode": initial_runtime_mode,
                     "timed_out": True,
                 }],
                 duration_seconds=time.monotonic() - started,
@@ -924,16 +943,12 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
 
         attempts.append({
             "stage": "runtime",
-            "network_mode": "none",
+            "network_mode": initial_runtime_mode,
             "returncode": run.returncode,
             "timed_out": False,
         })
 
-        selected_network = "none"
-
-        # --------------------------------------------------
-        # RUNTIME: BRIDGE FALLBACK
-        # --------------------------------------------------
+        selected_network = initial_runtime_mode
 
         combined = (
             (run.stdout or "")
@@ -942,7 +957,9 @@ CMD ["python", "/app/run_target.py", "/app/repo/{target_rel.as_posix()}"]
         )
 
         if (
-            run.returncode != 0
+            requested_network == "auto"
+            and initial_runtime_mode == "none"
+            and run.returncode != 0
             and _is_network_connectivity_failure(combined)
         ):
             print(

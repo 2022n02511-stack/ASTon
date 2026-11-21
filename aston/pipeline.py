@@ -1,11 +1,12 @@
 from pathlib import Path
+from typing import Optional
 from aston.scanner import parser
 from aston.watcher import watcher
 import json
 import os
 from uuid import uuid4
 from aston.axios import code_patcher, stage0, scraper
-from aston.docker import verify_single_file_in_docker, VerificationResult
+from aston.docker import verify_single_file_in_docker, VerificationResult, VerificationOutput
 from aston.repo_index import repo_map
 from aston.cli.console import rich_success, error, warning, info
 
@@ -186,6 +187,26 @@ def _is_repairable_failure(pr) -> bool:
     return True
 
 
+def _verify_candidate(
+    candidate_path: Path,
+    temp_req_path: Path,
+    root_path: str,
+    docker_time: int,
+    python_image: str,
+    network_mode: str,
+    build_timeout: int,
+) -> VerificationOutput:
+    return verify_single_file_in_docker(
+        str(candidate_path),
+        temp_req_path,
+        repo_root=root_path,
+        timeout=docker_time,
+        build_timeout=build_timeout,
+        python_image=python_image,
+        network_mode=network_mode,
+    )
+
+
 def repair_file(
     path: str,
     temp_req_path: Path,
@@ -196,6 +217,10 @@ def repair_file(
     max_retries: int = 2,
     passed_files: list = None,
     failed_files: list = None,
+    verification_enabled: bool = True,
+    python_image: str = "python:3.11-slim",
+    network_mode: str = "auto",
+    build_timeout: int = 600,
 ):
     """Repair a candidate, preserving the original until verification passes."""
     if passed_files is None:
@@ -222,6 +247,22 @@ def repair_file(
     original_path = Path(context_data.get("original_path", path))
     display_path = context_data.get("display_path", str(original_path))
 
+    if not verification_enabled:
+        warning(
+            f"Verification disabled (verification.enabled=false); staging {display_path} without Docker verification."
+        )
+        try:
+            candidate_code = _safe_read_text(candidate_path)
+        except (OSError, UnicodeError) as exc:
+            error(f"Cannot read candidate source {candidate_path}: {exc}")
+            _record_failure(display_path, failed_files)
+            return False
+
+        _save_successful_migration(path, candidate_code, file_run_dir, root_path)
+        candidate_path.unlink(missing_ok=True)
+        _record_success(display_path, passed_files, failed_files)
+        return True
+
     # --- Bug Fix: Safely resolve repair instructions without NameError ---
     rep_con = context_data.get("repair_instructions")
     repair_context_path = Path(__file__).parent / "repair_context.txt"
@@ -234,11 +275,14 @@ def repair_file(
         _save_verification_result(file_run_dir, "initial", pr)
 
     if pr is None:
-        pr = verify_single_file_in_docker(
-            str(candidate_path),
-            temp_req_path,
-            repo_root=root_path,
-            timeout=docker_time
+        pr = _verify_candidate(
+            candidate_path=candidate_path,
+            temp_req_path=temp_req_path,
+            root_path=root_path,
+            docker_time=docker_time,
+            python_image=python_image,
+            network_mode=network_mode,
+            build_timeout=build_timeout,
         )
 
     while pr.status != VerificationResult.PASS and retry_count < max_retries:
@@ -327,11 +371,14 @@ def repair_file(
             _record_failure(display_path, failed_files)
             return False
 
-        pr = verify_single_file_in_docker(
-            str(candidate_path),
-            temp_req_path,
-            repo_root=root_path,
-            timeout=docker_time
+        pr = _verify_candidate(
+            candidate_path=candidate_path,
+            temp_req_path=temp_req_path,
+            root_path=root_path,
+            docker_time=docker_time,
+            python_image=python_image,
+            network_mode=network_mode,
+            build_timeout=build_timeout,
         )
 
         _save_verification_result(
@@ -381,7 +428,11 @@ def run_for_repo(
     failed_files: list,
     max_tries: int,
     docker_file_time,
-    run_dir: Path
+    run_dir: Path,
+    verification_enabled: bool = True,
+    python_image: str = "python:3.11-slim",
+    network_mode: str = "auto",
+    build_timeout: int = 600,
 ):
     root = Path(root_path).expanduser().resolve()
     aston_dir = root / ".aston"
@@ -474,13 +525,19 @@ def run_for_repo(
         if version and version != "unknown"
     }
 
+    validation_req_file = (
+        Path(temp_req_path)
+        if temp_req_path is not None and Path(temp_req_path).is_file()
+        else Path(root_path) / "requirements.txt"
+    )
+
     if flat_all_rules and known_target_versions:
         validated_rules = run_with_animation(
             "Running sandboxed batch validation across target environments...",
             validate_all_rules,
             all_rules=flat_all_rules,
             all_target_versions=known_target_versions,
-            req_file=Path(root_path) / "requirements.txt",
+            req_file=validation_req_file,
         )
     else:
         validated_rules = []
@@ -548,7 +605,7 @@ def run_for_repo(
 
     original_path = source_path
     run_id = run_dir.name
-    candidate_path = _candidate_path(source_path, run_id, run_dir).resolve() # <--- Pass run_dir here
+    candidate_path = _candidate_path(source_path, run_id, run_dir).resolve()
 
     if not _write_candidate(candidate_path, source_code):
         error("Original source input is empty or invalid; refusing to patch.")
@@ -587,11 +644,21 @@ def run_for_repo(
             _record_failure(path, failed_files)
             return False, {}
 
-        pr = verify_single_file_in_docker(
-            str(candidate_path),
-            temp_req_path,
-            repo_root=root,
-            timeout=docker_file_time
+        if not verification_enabled:
+            warning(f"Verification disabled (verification.enabled=false); staging {path} without Docker verification.")
+            _save_successful_migration(path, factored_code, file_run_dir, str(root))
+            candidate_path.unlink(missing_ok=True)
+            _record_success(path, passed_files, failed_files)
+            return True, {}
+
+        pr = _verify_candidate(
+            candidate_path=candidate_path,
+            temp_req_path=temp_req_path,
+            root_path=str(root),
+            docker_time=docker_file_time,
+            python_image=python_image,
+            network_mode=network_mode,
+            build_timeout=build_timeout,
         )
 
         _save_verification_result(file_run_dir, "initial", pr)
@@ -630,7 +697,7 @@ def run_for_repo(
         info(f"\nInitial verification failed for {path}. Starting repair loop...")
 
         success = repair_file(
-            path=path,  # Passing relative/display path consistently
+            path=path,
             temp_req_path=temp_req_path,
             context_data=context_data,
             root_path=str(root),
@@ -639,6 +706,10 @@ def run_for_repo(
             max_retries=max_tries,
             passed_files=passed_files,
             failed_files=failed_files,
+            verification_enabled=verification_enabled,
+            python_image=python_image,
+            network_mode=network_mode,
+            build_timeout=build_timeout,
         )
 
         return success, context_data

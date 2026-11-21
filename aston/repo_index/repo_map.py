@@ -173,8 +173,20 @@ def migrate_repo(path: str):
 
     per_file_retries = mig_cfg.get("per_file_repair_retries", 3)
     sweep_passes = mig_cfg.get("failed_files_sweep_passes", 2)
-    docker_file_timeout = mig_cfg.get("docker_file_timeout_seconds", 300)
-    docker_repo_timeout = mig_cfg.get("docker_repo_timeout_seconds", 300)
+    ver_cfg = config.get("verification", {})
+
+    ver_enabled = bool(ver_cfg.get("enabled", True))
+    python_image = ver_cfg.get("python_image", "python:3.11-slim")
+    network_mode = ver_cfg.get("network_mode", "auto")
+    req_filename = ver_cfg.get("requirements_file", "requirements.txt")
+    test_command = ver_cfg.get("test_command", "python -m pytest -q")
+    docker_file_timeout = ver_cfg.get(
+        "file_timeout", mig_cfg.get("docker_file_timeout_seconds", 300)
+    )
+    docker_repo_timeout = ver_cfg.get(
+        "repo_timeout", mig_cfg.get("docker_repo_timeout_seconds", 300)
+    )
+    docker_build_timeout = ver_cfg.get("build_timeout", 600)
 
 
 
@@ -326,7 +338,11 @@ def migrate_repo(path: str):
             failed_files=failed_files,
             max_tries=per_file_retries,
             docker_file_time=docker_file_timeout,
-            run_dir=run_dir
+            run_dir=run_dir,
+            verification_enabled=ver_enabled,
+            python_image=python_image,
+            network_mode=network_mode,
+            build_timeout=docker_build_timeout,
         )
 
         if context_data:
@@ -354,7 +370,11 @@ def migrate_repo(path: str):
                 docker_time=docker_file_timeout,
                 max_retries=sweep_passes,
                 passed_files=passed_files,
-                failed_files=failed_files
+                failed_files=failed_files,
+                verification_enabled=ver_enabled,
+                python_image=python_image,
+                network_mode=network_mode,
+                build_timeout=docker_build_timeout,
             )
 
             if recovered:
@@ -392,12 +412,18 @@ def migrate_repo(path: str):
 
     migration_root = root / ".aston" / "staging"
 
-    test_result = verify_full_repo_in_docker(
-        str(root),
-        migration_root,
-        migration_root / "requirements.txt",
-        timeout=docker_repo_timeout
-    )
+    if not ver_enabled:
+        warning("Verification disabled via configuration (verification.enabled=false); skipping full-repo Docker check.")
+    else:
+        test_result = verify_full_repo_in_docker(
+            str(root),
+            migration_root,
+            migration_root / "requirements.txt",
+            python_image=python_image,
+            timeout=docker_repo_timeout,
+            test_command=test_command,
+            network_mode=network_mode,
+        )
 
     save_full_repo_verification_result(run_dir, test_result)
 
